@@ -1,8 +1,6 @@
 const express = require('express');
 const cors = require('cors');
 const dotenv = require('dotenv');
-const helmet = require('helmet');
-const rateLimit = require('express-rate-limit');
 const aiRoutes = require('./routes/ai');
 
 // Load environment variables
@@ -11,29 +9,71 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Security middleware
-app.use(helmet({
-    contentSecurityPolicy: {
-        directives: {
-            defaultSrc: ["'self'"],
-            styleSrc: ["'self'", "'unsafe-inline'", "https://cdnjs.cloudflare.com"],
-            fontSrc: ["'self'", "https://cdnjs.cloudflare.com"],
-            scriptSrc: ["'self'", "'unsafe-inline'"],
-        },
-    },
-    crossOriginEmbedderPolicy: false,
-}));
-
-// Rate limiting
-const limiter = rateLimit({
-    windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 100, // Limit each IP to 100 requests per windowMs
-    message: 'Too many requests from this IP, please try again later.',
-    standardHeaders: true,
-    legacyHeaders: false,
+// Security headers middleware (basic version without helmet)
+app.use((req, res, next) => {
+    // Basic security headers
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('X-XSS-Protection', '1; mode=block');
+    res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
+    next();
 });
 
-app.use(limiter);
+// Rate limiting middleware (basic version without express-rate-limit)
+const rateLimitStore = new Map();
+app.use((req, res, next) => {
+    const ip = req.ip || req.connection.remoteAddress;
+    const now = Date.now();
+    const windowMs = 15 * 60 * 1000; // 15 minutes
+    const maxRequests = 100;
+
+    if (!rateLimitStore.has(ip)) {
+        rateLimitStore.set(ip, { count: 1, resetTime: now + windowMs });
+        return next();
+    }
+
+    const userData = rateLimitStore.get(ip);
+
+    // Reset counter if window has passed
+    if (now > userData.resetTime) {
+        userData.count = 1;
+        userData.resetTime = now + windowMs;
+        rateLimitStore.set(ip, userData);
+        return next();
+    }
+
+    // Check if user has exceeded limit
+    if (userData.count >= maxRequests) {
+        return res.status(429).json({
+            error: 'Too Many Requests',
+            message: 'Please try again later.',
+            retryAfter: Math.ceil((userData.resetTime - now) / 1000)
+        });
+    }
+
+    // Increment counter
+    userData.count++;
+    rateLimitStore.set(ip, userData);
+    
+    // Add rate limit headers
+    res.setHeader('X-RateLimit-Limit', maxRequests);
+    res.setHeader('X-RateLimit-Remaining', maxRequests - userData.count);
+    res.setHeader('X-RateLimit-Reset', Math.ceil(userData.resetTime / 1000));
+    
+    next();
+});
+
+// Clean up rate limit store periodically (every hour)
+setInterval(() => {
+    const now = Date.now();
+    for (const [ip, data] of rateLimitStore.entries()) {
+        if (now > data.resetTime) {
+            rateLimitStore.delete(ip);
+        }
+    }
+}, 60 * 60 * 1000); // Every hour
 
 // CORS configuration
 const allowedOrigins = [
@@ -43,7 +83,7 @@ const allowedOrigins = [
     'http://localhost:8080',
     'https://intuiva.online',
     'https://ilkecandan.github.io',
-    'https://*.github.io' // Allow all GitHub Pages subdomains
+    'https://*.github.io'
 ];
 
 const corsOptions = {
@@ -51,31 +91,32 @@ const corsOptions = {
         // Allow requests with no origin (like mobile apps or curl requests)
         if (!origin) return callback(null, true);
         
-        if (allowedOrigins.indexOf(origin) !== -1) {
+        // Check exact matches
+        if (allowedOrigins.some(allowed => allowed === origin)) {
+            return callback(null, true);
+        }
+        
+        // Check wildcard matches
+        const isAllowed = allowedOrigins.some(allowed => {
+            if (allowed.includes('*')) {
+                const regex = new RegExp('^' + allowed.replace('*', '.*') + '$');
+                return regex.test(origin);
+            }
+            return false;
+        });
+        
+        if (isAllowed) {
             callback(null, true);
         } else {
-            // Check if origin is a subdomain of allowed domains
-            const isAllowedSubdomain = allowedOrigins.some(allowedOrigin => {
-                if (allowedOrigin.includes('*')) {
-                    const regexPattern = allowedOrigin.replace('*', '.*');
-                    return new RegExp(regexPattern).test(origin);
-                }
-                return false;
-            });
-            
-            if (isAllowedSubdomain) {
-                callback(null, true);
-            } else {
-                console.log(`Blocked by CORS: ${origin}`);
-                callback(new Error('Not allowed by CORS'));
-            }
+            console.log(`CORS blocked origin: ${origin}`);
+            callback(new Error(`Not allowed by CORS. Origin: ${origin}`));
         }
     },
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
     allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'X-Requested-With'],
     credentials: true,
     optionsSuccessStatus: 200,
-    maxAge: 86400, // 24 hours
+    maxAge: 86400,
 };
 
 app.use(cors(corsOptions));
@@ -89,46 +130,36 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // Request logging middleware
 app.use((req, res, next) => {
-    console.log(`${new Date().toISOString()} - ${req.method} ${req.path} - ${req.ip}`);
+    console.log(`${new Date().toISOString()} - ${req.method} ${req.path} - IP: ${req.ip || req.connection.remoteAddress}`);
     next();
 });
 
 // Routes
 app.use('/api/ai', aiRoutes);
 
-// Health check endpoint with detailed info
+// Health check endpoint
 app.get('/health', (req, res) => {
-    const healthcheck = {
+    res.json({ 
         status: 'healthy',
         timestamp: new Date().toISOString(),
         service: 'Intuiva Backend',
         version: '1.0.0',
         uptime: process.uptime(),
-        memory: process.memoryUsage(),
         environment: process.env.NODE_ENV || 'development',
-        nodeVersion: process.version,
-        platform: process.platform,
         hasDeepSeekKey: !!process.env.DEEPSEEK_API_KEY,
-    };
-    
-    res.setHeader('Content-Type', 'application/json');
-    res.status(200).json(healthcheck);
+    });
 });
 
-// Test endpoint with more details
+// Test endpoint
 app.get('/api/test', (req, res) => {
     res.json({
+        success: true,
         message: 'Backend is working!',
         environment: process.env.NODE_ENV || 'development',
         timestamp: new Date().toISOString(),
-        endpoints: {
-            ai: '/api/ai/analyze',
-            health: '/health',
-            test: '/api/test'
-        },
         cors: {
             allowedOrigins: allowedOrigins,
-            enabled: true
+            yourOrigin: req.headers.origin || 'No origin header'
         }
     });
 });
@@ -173,6 +204,7 @@ app.use('*', (req, res) => {
         error: 'Route not found',
         path: req.originalUrl,
         method: req.method,
+        timestamp: new Date().toISOString(),
         availableEndpoints: [
             'GET /health',
             'GET /api/test',
@@ -187,35 +219,26 @@ app.use('*', (req, res) => {
 app.use((err, req, res, next) => {
     console.error(`${new Date().toISOString()} - Error:`, {
         message: err.message,
-        stack: err.stack,
         path: req.path,
         method: req.method,
-        ip: req.ip
+        ip: req.ip || req.connection.remoteAddress
     });
 
     // CORS error
-    if (err.message === 'Not allowed by CORS') {
+    if (err.message.includes('Not allowed by CORS')) {
         return res.status(403).json({
             error: 'CORS Error',
             message: 'Origin not allowed',
-            allowedOrigins: allowedOrigins,
-            yourOrigin: req.headers.origin
-        });
-    }
-
-    // Rate limit error
-    if (err.name === 'RateLimitError') {
-        return res.status(429).json({
-            error: 'Rate Limit Exceeded',
-            message: err.message
+            yourOrigin: req.headers.origin,
+            timestamp: new Date().toISOString()
         });
     }
 
     // Default error response
     const statusCode = err.statusCode || 500;
     const errorResponse = {
-        error: err.name || 'Internal Server Error',
-        message: err.message || 'Something went wrong!',
+        error: 'Internal Server Error',
+        message: process.env.NODE_ENV === 'development' ? err.message : 'Something went wrong!',
         path: req.path,
         timestamp: new Date().toISOString()
     };
@@ -229,28 +252,6 @@ app.use((err, req, res, next) => {
 });
 
 // Graceful shutdown handling
-process.on('SIGTERM', () => {
-    console.log('SIGTERM signal received: closing HTTP server');
-    server.close(() => {
-        console.log('HTTP server closed');
-        process.exit(0);
-    });
-});
-
-process.on('SIGINT', () => {
-    console.log('SIGINT signal received: closing HTTP server');
-    server.close(() => {
-        console.log('HTTP server closed');
-        process.exit(0);
-    });
-});
-
-// Unhandled promise rejection handler
-process.on('unhandledRejection', (reason, promise) => {
-    console.error('Unhandled Rejection at:', promise, 'reason:', reason);
-});
-
-// Start server
 const server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`
 ╔══════════════════════════════════════════════════════════════╗
@@ -259,13 +260,11 @@ const server = app.listen(PORT, '0.0.0.0', () => {
 ║  Server running on port: ${PORT}                              ║
 ║  Environment: ${process.env.NODE_ENV || 'development'}        ║
 ║  DeepSeek API Key: ${process.env.DEEPSEEK_API_KEY ? '✅ Set' : '❌ Not set'} ║
-║  CORS Allowed Origins: ${allowedOrigins.length}               ║
 ║  Health Check: http://localhost:${PORT}/health                ║
 ║  API Docs: http://localhost:${PORT}/api/docs                  ║
 ╚══════════════════════════════════════════════════════════════╝
     `);
     
-    // Log all available routes
     console.log('\n📋 Available Routes:');
     console.log('─────────────────────────────────────');
     console.log('GET  /health           - Health check');
@@ -274,6 +273,29 @@ const server = app.listen(PORT, '0.0.0.0', () => {
     console.log('POST /api/ai/analyze   - AI task generation');
     console.log('GET  /api/ai/test      - Test AI connection');
     console.log('─────────────────────────────────────\n');
+    
+    console.log('🌐 CORS Allowed Origins:');
+    allowedOrigins.forEach(origin => {
+        console.log(`   • ${origin}`);
+    });
+    console.log('');
+});
+
+// Handle graceful shutdown
+process.on('SIGTERM', () => {
+    console.log('SIGTERM received: shutting down gracefully...');
+    server.close(() => {
+        console.log('Server closed');
+        process.exit(0);
+    });
+});
+
+process.on('SIGINT', () => {
+    console.log('SIGINT received: shutting down gracefully...');
+    server.close(() => {
+        console.log('Server closed');
+        process.exit(0);
+    });
 });
 
 // Export for testing
