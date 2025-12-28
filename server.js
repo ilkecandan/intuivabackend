@@ -1,302 +1,233 @@
 const express = require('express');
 const cors = require('cors');
-const dotenv = require('dotenv');
-const aiRoutes = require('./routes/ai');
-
-// Load environment variables
-dotenv.config();
+require('dotenv').config();
+const fetch = require('node-fetch');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Security headers middleware (basic version without helmet)
-app.use((req, res, next) => {
-    // Basic security headers
-    res.setHeader('X-Content-Type-Options', 'nosniff');
-    res.setHeader('X-Frame-Options', 'DENY');
-    res.setHeader('X-XSS-Protection', '1; mode=block');
-    res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
-    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
-    res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
-    next();
-});
+// Middleware
+app.use(cors());
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
-// Rate limiting middleware (basic version without express-rate-limit)
-const rateLimitStore = new Map();
-app.use((req, res, next) => {
-    const ip = req.ip || req.connection.remoteAddress;
-    const now = Date.now();
-    const windowMs = 15 * 60 * 1000; // 15 minutes
-    const maxRequests = 100;
-
-    if (!rateLimitStore.has(ip)) {
-        rateLimitStore.set(ip, { count: 1, resetTime: now + windowMs });
-        return next();
-    }
-
-    const userData = rateLimitStore.get(ip);
-
-    // Reset counter if window has passed
-    if (now > userData.resetTime) {
-        userData.count = 1;
-        userData.resetTime = now + windowMs;
-        rateLimitStore.set(ip, userData);
-        return next();
-    }
-
-    // Check if user has exceeded limit
-    if (userData.count >= maxRequests) {
-        return res.status(429).json({
-            error: 'Too Many Requests',
-            message: 'Please try again later.',
-            retryAfter: Math.ceil((userData.resetTime - now) / 1000)
-        });
-    }
-
-    // Increment counter
-    userData.count++;
-    rateLimitStore.set(ip, userData);
-    
-    // Add rate limit headers
-    res.setHeader('X-RateLimit-Limit', maxRequests);
-    res.setHeader('X-RateLimit-Remaining', maxRequests - userData.count);
-    res.setHeader('X-RateLimit-Reset', Math.ceil(userData.resetTime / 1000));
-    
-    next();
-});
-
-// Clean up rate limit store periodically (every hour)
-setInterval(() => {
-    const now = Date.now();
-    for (const [ip, data] of rateLimitStore.entries()) {
-        if (now > data.resetTime) {
-            rateLimitStore.delete(ip);
-        }
-    }
-}, 60 * 60 * 1000); // Every hour
-
-// CORS configuration
-const allowedOrigins = [
-    'http://localhost:5500',
-    'http://127.0.0.1:5500',
-    'http://localhost:3000',
-    'http://localhost:8080',
-    'https://intuiva.online',
-    'https://ilkecandan.github.io',
-    'https://*.github.io'
-];
-
-const corsOptions = {
-    origin: function (origin, callback) {
-        // Allow requests with no origin (like mobile apps or curl requests)
-        if (!origin) return callback(null, true);
-        
-        // Check exact matches
-        if (allowedOrigins.some(allowed => allowed === origin)) {
-            return callback(null, true);
-        }
-        
-        // Check wildcard matches
-        const isAllowed = allowedOrigins.some(allowed => {
-            if (allowed.includes('*')) {
-                const regex = new RegExp('^' + allowed.replace('*', '.*') + '$');
-                return regex.test(origin);
-            }
-            return false;
-        });
-        
-        if (isAllowed) {
-            callback(null, true);
-        } else {
-            console.log(`CORS blocked origin: ${origin}`);
-            callback(new Error(`Not allowed by CORS. Origin: ${origin}`));
-        }
-    },
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'X-Requested-With'],
-    credentials: true,
-    optionsSuccessStatus: 200,
-    maxAge: 86400,
-};
-
-app.use(cors(corsOptions));
-
-// Handle preflight requests
-app.options('*', cors(corsOptions));
-
-// Body parsing middleware
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
-
-// Request logging middleware
-app.use((req, res, next) => {
-    console.log(`${new Date().toISOString()} - ${req.method} ${req.path} - IP: ${req.ip || req.connection.remoteAddress}`);
-    next();
-});
-
-// Routes
-app.use('/api/ai', aiRoutes);
+// Load environment variables
+const DEEPSEEK_API_KEY = process.env.DEEPSEEK_AI;
+const DEEPSEEK_API_URL = 'https://api.deepseek.com/v1/chat/completions';
 
 // Health check endpoint
-app.get('/health', (req, res) => {
-    res.json({ 
-        status: 'healthy',
-        timestamp: new Date().toISOString(),
-        service: 'Intuiva Backend',
-        version: '1.0.0',
-        uptime: process.uptime(),
-        environment: process.env.NODE_ENV || 'development',
-        hasDeepSeekKey: !!process.env.DEEPSEEK_API_KEY,
-    });
+app.get('/', (req, res) => {
+    res.json({ status: 'OK', message: 'Intuiva AI Backend is running' });
 });
 
-// Test endpoint
-app.get('/api/test', (req, res) => {
-    res.json({
-        success: true,
-        message: 'Backend is working!',
-        environment: process.env.NODE_ENV || 'development',
-        timestamp: new Date().toISOString(),
-        cors: {
-            allowedOrigins: allowedOrigins,
-            yourOrigin: req.headers.origin || 'No origin header'
+// AI Task Generation Endpoint
+app.post('/api/generate-tasks', async (req, res) => {
+    try {
+        const { answers, questions, userContext } = req.body;
+        
+        if (!DEEPSEEK_API_KEY) {
+            return res.status(500).json({ 
+                error: 'AI service not configured',
+                tasks: generateFallbackTasks(answers, questions) 
+            });
+        }
+
+        // Prepare the prompt for DeepSeek
+        const prompt = createAIPrompt(answers, questions, userContext);
+        
+        // Call DeepSeek API
+        const aiTasks = await callDeepSeekAPI(prompt);
+        
+        // If AI fails, use fallback
+        if (!aiTasks || aiTasks.length === 0) {
+            const fallbackTasks = generateFallbackTasks(answers, questions);
+            return res.json({ tasks: fallbackTasks, source: 'fallback' });
+        }
+        
+        res.json({ tasks: aiTasks, source: 'ai' });
+        
+    } catch (error) {
+        console.error('AI Generation Error:', error);
+        
+        // Always return fallback tasks on error
+        const fallbackTasks = generateFallbackTasks(req.body.answers, req.body.questions);
+        res.json({ tasks: fallbackTasks, source: 'fallback-error' });
+    }
+});
+
+// Function to call DeepSeek API
+async function callDeepSeekAPI(prompt) {
+    try {
+        const response = await fetch(DEEPSEEK_API_URL, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${DEEPSEEK_API_KEY}`
+            },
+            body: JSON.stringify({
+                model: 'deepseek-chat',
+                messages: [
+                    {
+                        role: 'system',
+                        content: `You are an expert project manager and Kanban board specialist. 
+                        Analyze the user's project context and generate actionable tasks for a Kanban board.
+                        IMPORTANT: Return ONLY a valid JSON array of task objects. No explanations, no markdown, just JSON.`
+                    },
+                    {
+                        role: 'user',
+                        content: prompt
+                    }
+                ],
+                temperature: 0.7,
+                max_tokens: 2000
+            })
+        });
+
+        if (!response.ok) {
+            throw new Error(`DeepSeek API error: ${response.status}`);
+        }
+
+        const data = await response.json();
+        const aiResponse = data.choices[0]?.message?.content;
+        
+        // Parse the AI response
+        return parseAIResponse(aiResponse);
+        
+    } catch (error) {
+        console.error('DeepSeek API call failed:', error);
+        return null;
+    }
+}
+
+// Create AI prompt based on user answers
+function createAIPrompt(answers, questions, userContext = {}) {
+    let prompt = `Generate Kanban tasks for a project manager based on these questionnaire answers:\n\n`;
+    
+    // Add questions and answers
+    Object.entries(answers).forEach(([index, answer]) => {
+        const questionIndex = parseInt(index);
+        if (questionIndex < questions.length) {
+            const question = questions[questionIndex];
+            prompt += `Category: ${question.category}\n`;
+            prompt += `Question: ${question.text}\n`;
+            prompt += `Answer: ${answer}\n\n`;
         }
     });
-});
+    
+    // Add user context if provided
+    if (userContext.projectType) {
+        prompt += `Project Type: ${userContext.projectType}\n`;
+    }
+    if (userContext.teamSize) {
+        prompt += `Team Size: ${userContext.teamSize}\n`;
+    }
+    if (userContext.timeline) {
+        prompt += `Timeline: ${userContext.timeline}\n`;
+    }
+    
+    prompt += `\nBased on this information, generate 5-15 actionable Kanban tasks with:
+    1. Clear, specific titles
+    2. Detailed descriptions
+    3. Priority levels (high, medium, low)
+    4. Relevant tags/categories
+    5. Initial status (todo, inprogress, done)
+    
+    Format each task as a JSON object with these fields:
+    - id (auto-generated, just use "ai_" + random number)
+    - title
+    - description
+    - status (default: "todo")
+    - priority ("high", "medium", or "low")
+    - tags (array of relevant keywords)
+    
+    Return ONLY a valid JSON array.`;
+    
+    return prompt;
+}
 
-// API Documentation endpoint
-app.get('/api/docs', (req, res) => {
-    res.json({
-        api: 'Intuiva Backend API',
-        version: '1.0.0',
-        endpoints: [
+// Parse AI response to extract JSON
+function parseAIResponse(aiResponse) {
+    try {
+        // Try to extract JSON from the response
+        const jsonMatch = aiResponse.match(/\[[\s\S]*\]/);
+        if (jsonMatch) {
+            const tasks = JSON.parse(jsonMatch[0]);
+            
+            // Validate and format tasks
+            return tasks.map(task => ({
+                id: `ai_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+                title: task.title || 'Untitled Task',
+                description: task.description || '',
+                status: task.status || 'todo',
+                priority: task.priority || 'medium',
+                tags: Array.isArray(task.tags) ? task.tags : [],
+                createdAt: new Date().toISOString(),
+                source: 'ai'
+            }));
+        }
+        return [];
+    } catch (error) {
+        console.error('Failed to parse AI response:', error);
+        return [];
+    }
+}
+
+// Fallback task generator (existing logic)
+function generateFallbackTasks(answers, questions) {
+    const tasks = [];
+    const hasValidAnswers = Object.values(answers).some(answer => 
+        answer && answer !== '[Skipped]' && answer !== '[Not Applicable]'
+    );
+    
+    if (!hasValidAnswers) {
+        // Return generic project management tasks
+        return [
             {
-                path: '/api/ai/analyze',
-                method: 'POST',
-                description: 'Analyze project answers and generate tasks',
-                body: {
-                    answers: 'Object containing question answers',
-                    projectName: 'String - Project name'
-                }
+                id: `fb_${Date.now()}_1`,
+                title: 'Define project scope and objectives',
+                description: 'Clearly document what the project will and will not deliver',
+                status: 'todo',
+                priority: 'high',
+                tags: ['planning', 'scope'],
+                source: 'fallback'
             },
             {
-                path: '/api/ai/test',
-                method: 'GET',
-                description: 'Test AI connection'
+                id: `fb_${Date.now()}_2`,
+                title: 'Identify key stakeholders',
+                description: 'List all stakeholders and define communication plan',
+                status: 'todo',
+                priority: 'medium',
+                tags: ['stakeholders', 'communication'],
+                source: 'fallback'
             },
             {
-                path: '/health',
-                method: 'GET',
-                description: 'Health check endpoint'
-            },
-            {
-                path: '/api/test',
-                method: 'GET',
-                description: 'Test endpoint'
+                id: `fb_${Date.now()}_3`,
+                title: 'Set up project repository',
+                description: 'Create Git repository with proper branching strategy',
+                status: 'todo',
+                priority: 'high',
+                tags: ['setup', 'development'],
+                source: 'fallback'
             }
-        ]
-    });
-});
-
-// 404 handler for undefined routes
-app.use('*', (req, res) => {
-    res.status(404).json({
-        error: 'Route not found',
-        path: req.originalUrl,
-        method: req.method,
-        timestamp: new Date().toISOString(),
-        availableEndpoints: [
-            'GET /health',
-            'GET /api/test',
-            'GET /api/docs',
-            'POST /api/ai/analyze',
-            'GET /api/ai/test'
-        ]
-    });
-});
-
-// Global error handling middleware
-app.use((err, req, res, next) => {
-    console.error(`${new Date().toISOString()} - Error:`, {
-        message: err.message,
-        path: req.path,
-        method: req.method,
-        ip: req.ip || req.connection.remoteAddress
-    });
-
-    // CORS error
-    if (err.message.includes('Not allowed by CORS')) {
-        return res.status(403).json({
-            error: 'CORS Error',
-            message: 'Origin not allowed',
-            yourOrigin: req.headers.origin,
-            timestamp: new Date().toISOString()
-        });
+        ];
     }
-
-    // Default error response
-    const statusCode = err.statusCode || 500;
-    const errorResponse = {
-        error: 'Internal Server Error',
-        message: process.env.NODE_ENV === 'development' ? err.message : 'Something went wrong!',
-        path: req.path,
-        timestamp: new Date().toISOString()
-    };
-
-    // Add stack trace in development
-    if (process.env.NODE_ENV === 'development') {
-        errorResponse.stack = err.stack;
-    }
-
-    res.status(statusCode).json(errorResponse);
-});
-
-// Graceful shutdown handling
-const server = app.listen(PORT, '0.0.0.0', () => {
-    console.log(`
-╔══════════════════════════════════════════════════════════════╗
-║                    INTUIVA BACKEND SERVER                    ║
-╠══════════════════════════════════════════════════════════════╣
-║  Server running on port: ${PORT}                              ║
-║  Environment: ${process.env.NODE_ENV || 'development'}        ║
-║  DeepSeek API Key: ${process.env.DEEPSEEK_API_KEY ? '✅ Set' : '❌ Not set'} ║
-║  Health Check: http://localhost:${PORT}/health                ║
-║  API Docs: http://localhost:${PORT}/api/docs                  ║
-╚══════════════════════════════════════════════════════════════╝
-    `);
     
-    console.log('\n📋 Available Routes:');
-    console.log('─────────────────────────────────────');
-    console.log('GET  /health           - Health check');
-    console.log('GET  /api/test         - Test endpoint');
-    console.log('GET  /api/docs         - API documentation');
-    console.log('POST /api/ai/analyze   - AI task generation');
-    console.log('GET  /api/ai/test      - Test AI connection');
-    console.log('─────────────────────────────────────\n');
+    // Generate tasks based on answers (your existing logic)
+    // ... include your existing generateTasksBasedOnAnswers logic here
     
-    console.log('🌐 CORS Allowed Origins:');
-    allowedOrigins.forEach(origin => {
-        console.log(`   • ${origin}`);
-    });
-    console.log('');
-});
+    return tasks.length > 0 ? tasks : [
+        {
+            id: `fb_${Date.now()}_default`,
+            title: 'Start project planning',
+            description: 'Begin with initial project setup and planning phase',
+            status: 'todo',
+            priority: 'medium',
+            tags: ['planning', 'setup'],
+            source: 'fallback'
+        }
+    ];
+}
 
-// Handle graceful shutdown
-process.on('SIGTERM', () => {
-    console.log('SIGTERM received: shutting down gracefully...');
-    server.close(() => {
-        console.log('Server closed');
-        process.exit(0);
-    });
+app.listen(PORT, () => {
+    console.log(`AI Backend running on port ${PORT}`);
 });
-
-process.on('SIGINT', () => {
-    console.log('SIGINT received: shutting down gracefully...');
-    server.close(() => {
-        console.log('Server closed');
-        process.exit(0);
-    });
-});
-
-// Export for testing
-module.exports = app;
