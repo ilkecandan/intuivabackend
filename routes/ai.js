@@ -95,21 +95,53 @@ Focus on tasks that:
 `;
 }
 
-// Parse AI response to extract tasks
+// Parse AI response to extract tasks - UPDATED FIX
 function parseAIResponse(aiResponse) {
     try {
-        // Try to extract JSON from the response
-        const jsonMatch = aiResponse.match(/\[\s*\{[\s\S]*\}\s*\]/);
-        if (jsonMatch) {
-            const tasks = JSON.parse(jsonMatch[0]);
-            return { tasks, analysis: "AI-generated tasks based on your answers" };
+        console.log('Raw AI Response:', aiResponse.substring(0, 500)); // Debug log
+        
+        // Try to extract JSON from markdown code blocks
+        let jsonString = aiResponse;
+        
+        // Remove markdown code blocks if present
+        if (aiResponse.includes('```json')) {
+            jsonString = aiResponse.split('```json')[1].split('```')[0].trim();
+        } else if (aiResponse.includes('```')) {
+            jsonString = aiResponse.split('```')[1].split('```')[0].trim();
         }
         
-        // If no JSON found, use fallback
-        throw new Error('No valid JSON found in AI response');
+        // Clean up any remaining non-JSON text
+        const jsonStart = jsonString.indexOf('[');
+        const jsonEnd = jsonString.lastIndexOf(']') + 1;
+        
+        if (jsonStart !== -1 && jsonEnd !== -1) {
+            jsonString = jsonString.substring(jsonStart, jsonEnd);
+        }
+        
+        console.log('Cleaned JSON String:', jsonString.substring(0, 300)); // Debug log
+        
+        const tasks = JSON.parse(jsonString);
+        
+        // Validate tasks structure
+        const validatedTasks = tasks.map(task => ({
+            title: task.title || "Untitled Task",
+            description: task.description || "No description provided",
+            priority: ['critical', 'high', 'medium', 'low'].includes(task.priority?.toLowerCase()) 
+                ? task.priority.toLowerCase() 
+                : 'medium',
+            assignee: task.assignee || 'unassigned',
+            tags: Array.isArray(task.tags) ? task.tags : [task.tags || 'general'],
+            reason: task.reason || "Task generated based on project analysis"
+        }));
+        
+        return { 
+            tasks: validatedTasks, 
+            analysis: "AI-generated tasks based on your workflow analysis"
+        };
         
     } catch (error) {
-        console.log('Failed to parse AI response, using fallback');
+        console.error('AI Response Parse Error:', error.message);
+        console.error('Failed JSON string:', aiResponse);
         return generateFallbackTasks({}, 'Project');
     }
 }
