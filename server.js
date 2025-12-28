@@ -11,7 +11,7 @@ const PORT = process.env.PORT || 3000;
 
 // Middleware
 app.use(cors({
-    origin: ['http://localhost:5500', 'http://127.0.0.1:5500', 'https://yourusername.github.io'],
+    origin: ['http://localhost:5500', 'http://127.0.0.1:5500', 'https://ilkecandan.github.io'],
     credentials: true
 }));
 app.use(express.json());
