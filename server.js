@@ -20,46 +20,40 @@ app.post('/api/generate-tasks', async (req, res) => {
         const { 
             answers = {}, 
             questions = [], 
-            language = 'auto', // auto-detect language
+            language = 'en', 
             generateReport = false 
         } = req.body;
 
-        // Auto-detect language from answers
-        const detectedLanguage = detectLanguageFromAnswers(answers, questions);
-        const finalLanguage = language === 'auto' ? detectedLanguage : language;
-        
         // 1. Analyze user input
-        const analysis = analyzeUserInput(answers, questions, finalLanguage);
-        console.log(`📊 Analysis: ${analysis.experienceLevel} level, ${analysis.answerCount} answers, Language: ${finalLanguage}`);
+        const analysis = analyzeUserInput(answers, questions, language);
+        console.log(`📊 Analysis: ${analysis.experienceLevel} level, ${analysis.answerCount} answers`);
         
         // 2. Generate tasks
         let tasks = [];
         try {
-            tasks = await generateAITasks(answers, questions, finalLanguage, analysis);
-            console.log(`🤖 AI generated ${tasks.length} tasks`);
+            tasks = await generateAITasks(answers, questions, language, analysis);
         } catch (aiError) {
             console.log('🤖 AI task generation failed, using fallback:', aiError.message);
-            tasks = generateFallbackTasks(finalLanguage, analysis);
+            tasks = generateFallbackTasks(language, analysis);
         }
         
         // 3. Ensure minimum tasks
         if (tasks.length < 8) {
-            const extraTasks = generateExtraTasks(8 - tasks.length, finalLanguage, analysis);
+            const extraTasks = generateExtraTasks(8 - tasks.length, language, analysis);
             tasks = [...tasks, ...extraTasks];
         }
         
         // 4. Personalize tasks
-        const personalizedTasks = personalizeTasks(tasks, answers, questions, finalLanguage);
+        const personalizedTasks = personalizeTasks(tasks, answers, questions, language);
         
         // 5. Generate report if requested
         let report = null;
         if (generateReport) {
             try {
-                report = await generateAIReport(personalizedTasks, answers, questions, finalLanguage, analysis);
-                console.log('📋 AI report generated successfully');
+                report = await generateAIReport(personalizedTasks, answers, questions, language, analysis);
             } catch (reportError) {
                 console.log('📋 AI report failed, using local report:', reportError.message);
-                report = generateLocalReport(personalizedTasks, answers, questions, finalLanguage, analysis);
+                report = generateLocalReport(personalizedTasks, answers, questions, language, analysis);
             }
         }
 
@@ -68,12 +62,12 @@ app.post('/api/generate-tasks', async (req, res) => {
             success: true,
             tasks: personalizedTasks,
             report: report,
-            note: getSuccessNote(finalLanguage, personalizedTasks.length, analysis.experienceLevel),
+            note: getSuccessNote(language, personalizedTasks.length, analysis.experienceLevel),
             stats: {
                 totalTasks: personalizedTasks.length,
                 userAnswers: analysis.answerCount,
                 experienceLevel: analysis.experienceLevel,
-                language: finalLanguage
+                themes: analysis.themes
             }
         });
 
@@ -81,31 +75,28 @@ app.post('/api/generate-tasks', async (req, res) => {
         console.log('🔥 Critical error in task generation:', error.message);
         
         // Always return success with fallback
-        const { answers = {}, questions = [], language = 'auto', generateReport = false } = req.body || {};
-        const detectedLanguage = detectLanguageFromAnswers(answers, questions);
-        const finalLanguage = language === 'auto' ? detectedLanguage : language;
-        const analysis = analyzeUserInput(answers, questions, finalLanguage);
-        const fallbackTasks = generateFallbackTasks(finalLanguage, analysis);
-        const personalizedTasks = personalizeTasks(fallbackTasks, answers, questions, finalLanguage);
+        const { answers = {}, questions = [], language = 'en', generateReport = false } = req.body || {};
+        const analysis = analyzeUserInput(answers, questions, language);
+        const fallbackTasks = generateFallbackTasks(language, analysis);
+        const personalizedTasks = personalizeTasks(fallbackTasks, answers, questions, language);
         
         let report = null;
         if (generateReport) {
-            report = generateLocalReport(personalizedTasks, answers, questions, finalLanguage, analysis);
+            report = generateLocalReport(personalizedTasks, answers, questions, language, analysis);
         }
         
         res.json({
             success: true,
             tasks: personalizedTasks,
             report: report,
-            note: finalLanguage === 'tr' 
+            note: language === 'tr' 
                 ? 'Güvenilir görevler oluşturuldu' 
                 : 'Reliable tasks created',
             fallback: true,
             stats: {
                 totalTasks: personalizedTasks.length,
                 userAnswers: analysis.answerCount,
-                experienceLevel: analysis.experienceLevel,
-                language: finalLanguage
+                experienceLevel: analysis.experienceLevel
             }
         });
     }
@@ -120,101 +111,59 @@ app.post('/api/generate-report', async (req, res) => {
             tasks = [], 
             answers = {}, 
             questions = [], 
-            language = 'auto'
+            language = 'en' 
         } = req.body;
-        
-        // Auto-detect language from answers or tasks
-        const detectedLanguage = detectLanguageFromAnswers(answers, questions) || 
-                               detectLanguageFromTasks(tasks) || 
-                               'en';
-        const finalLanguage = language === 'auto' ? detectedLanguage : language;
         
         if (!tasks || tasks.length === 0) {
             return res.json({
                 success: true,
-                report: generateEmptyReport(finalLanguage),
-                note: finalLanguage === 'tr' ? 'Görev olmadığı için temel rapor' : 'Basic report as no tasks',
+                report: generateEmptyReport(language),
+                note: language === 'tr' ? 'Görev olmadığı için temel rapor' : 'Basic report as no tasks',
                 fallback: true
             });
         }
         
-        const analysis = analyzeUserInput(answers, questions, finalLanguage);
+        const analysis = analyzeUserInput(answers, questions, language);
         let report;
         
         try {
-            // Try AI report with shorter timeout first
-            report = await generateAIReportWithShortTimeout(tasks, answers, questions, finalLanguage, analysis);
-            console.log('📋 AI report generated successfully');
+            report = await generateAIReport(tasks, answers, questions, language, analysis);
         } catch (aiError) {
-            console.log('📋 AI report failed, using local report:', aiError.message);
-            report = generateProfessionalLocalReport(tasks, answers, questions, finalLanguage, analysis);
+            console.log('📋 AI report failed, using local:', aiError.message);
+            report = generateLocalReport(tasks, answers, questions, language, analysis);
         }
         
         res.json({
             success: true,
             report: report,
-            note: finalLanguage === 'tr' ? 'Proje raporu oluşturuldu' : 'Project report generated',
+            note: language === 'tr' ? 'Proje raporu oluşturuldu' : 'Project report generated',
             stats: {
                 tasksInReport: tasks.length,
-                reportLength: report.length,
-                language: finalLanguage
+                reportLength: report.length
             }
         });
         
     } catch (error) {
         console.log('🔥 Report generation error:', error.message);
         
-        const { tasks = [], answers = {}, questions = [], language = 'auto' } = req.body || {};
-        const detectedLanguage = detectLanguageFromAnswers(answers, questions) || 'en';
-        const finalLanguage = language === 'auto' ? detectedLanguage : language;
-        const analysis = analyzeUserInput(answers, questions, finalLanguage);
-        const report = generateProfessionalLocalReport(tasks, answers, questions, finalLanguage, analysis);
+        const { tasks = [], answers = {}, questions = [], language = 'en' } = req.body || {};
+        const analysis = analyzeUserInput(answers, questions, language);
+        const report = generateLocalReport(tasks, answers, questions, language, analysis);
         
         res.json({
             success: true,
             report: report,
-            note: finalLanguage === 'tr' ? 'Profesyonel yerel rapor oluşturuldu' : 'Professional local report generated',
+            note: language === 'tr' ? 'Yerel rapor oluşturuldu' : 'Local report generated',
             fallback: true,
             stats: {
                 tasksInReport: tasks.length,
-                reportLength: report.length,
-                language: finalLanguage
+                reportLength: report.length
             }
         });
     }
 });
 
 // ==================== HELPER FUNCTIONS ====================
-
-function detectLanguageFromAnswers(answers, questions) {
-    // Analyze text to detect language
-    const allText = Object.values(answers).join(' ') + 
-                   questions.map(q => q.text).join(' ');
-    
-    // Count Turkish specific characters
-    const turkishChars = (allText.match(/[çğıöşüÇĞİÖŞÜ]/g) || []).length;
-    const englishChars = (allText.match(/[a-zA-Z]/g) || []).length;
-    
-    if (turkishChars > 5 || (turkishChars > 0 && turkishChars > englishChars / 10)) {
-        return 'tr';
-    }
-    
-    return 'en'; // default to English
-}
-
-function detectLanguageFromTasks(tasks) {
-    if (!Array.isArray(tasks) || tasks.length === 0) return null;
-    
-    const sampleText = tasks.slice(0, 3)
-        .map(t => `${t.title} ${t.description}`)
-        .join(' ');
-    
-    const turkishChars = (sampleText.match(/[çğıöşüÇĞİÖŞÜ]/g) || []).length;
-    const englishChars = (sampleText.match(/[a-zA-Z]/g) || []).length;
-    
-    if (turkishChars > 3) return 'tr';
-    return 'en';
-}
 
 function analyzeUserInput(answers, questions, language) {
     const answerEntries = Object.entries(answers);
@@ -228,7 +177,7 @@ function analyzeUserInput(answers, questions, language) {
     
     const answerCount = validAnswers.length;
     
-    // Determine experience level based on answer length and complexity
+    // Determine experience level
     let experienceLevel = "beginner";
     if (answerCount > 10) experienceLevel = "expert";
     else if (answerCount > 6) experienceLevel = "experienced";
@@ -241,10 +190,9 @@ function analyzeUserInput(answers, questions, language) {
     let qaText = "";
     validAnswers.forEach(([index, answer]) => {
         const qIndex = parseInt(index);
-        const question = questions[qIndex]?.text || 
-                        (language === 'tr' ? `Soru ${qIndex + 1}` : `Question ${qIndex + 1}`);
+        const question = questions[qIndex]?.text || (language === 'tr' ? `Soru ${qIndex + 1}` : `Question ${qIndex + 1}`);
         qaText += `${language === 'tr' ? 'Soru' : 'Question'}: ${question}\n`;
-        qaText += `${language === 'tr' ? 'Cevap' : 'Answer'}: ${answer.substring(0, 500)}\n\n`;
+        qaText += `${language === 'tr' ? 'Cevap' : 'Answer'}: ${answer}\n\n`;
     });
     
     if (qaText.length === 0) {
@@ -267,31 +215,27 @@ function extractThemesFromAnswers(answers, language) {
     const themes = new Set();
     
     if (language === 'tr') {
-        if (text.includes('web') || text.includes('site') || text.includes('internet')) themes.add('Web Geliştirme');
-        if (text.includes('mobil') || text.includes('telefon') || text.includes('uygulama')) themes.add('Mobil Uygulama');
-        if (text.includes('iş') || text.includes('şirket') || text.includes('ticaret')) themes.add('İş/Şirket');
-        if (text.includes('plan') || text.includes('zaman') || text.includes('takvim')) themes.add('Planlama');
-        if (text.includes('ekip') || text.includes('takım') || text.includes('çalışan')) themes.add('Ekip Yönetimi');
-        if (text.includes('bütçe') || text.includes('para') || text.includes('maliyet')) themes.add('Bütçe');
-        if (text.includes('e-ticaret') || text.includes('satış') || text.includes('alışveriş')) themes.add('E-Ticaret');
-        if (text.includes('tasarım') || text.includes('görsel') || text.includes('ui')) themes.add('Tasarım');
-        if (text.includes('yazılım') || text.includes('kod') || text.includes('program')) themes.add('Yazılım');
-        if (text.includes('eğitim') || text.includes('öğren') || text.includes('kurs')) themes.add('Eğitim');
+        if (text.includes('web') || text.includes('site') || text.includes('internet')) themes.add('web development');
+        if (text.includes('mobil') || text.includes('telefon') || text.includes('uygulama')) themes.add('mobile app');
+        if (text.includes('iş') || text.includes('şirket') || text.includes('ticaret')) themes.add('business');
+        if (text.includes('plan') || text.includes('zaman') || text.includes('takvim')) themes.add('planning');
+        if (text.includes('ekip') || text.includes('takım') || text.includes('çalışan')) themes.add('team');
+        if (text.includes('bütçe') || text.includes('para') || text.includes('maliyet')) themes.add('budget');
+        if (text.includes('e-ticaret') || text.includes('satış') || text.includes('alışveriş')) themes.add('e-commerce');
+        if (text.includes('tasarım') || text.includes('görsel') || text.includes('ui')) themes.add('design');
     } else {
-        if (text.includes('web') || text.includes('site') || text.includes('internet')) themes.add('Web Development');
-        if (text.includes('mobile') || text.includes('phone') || text.includes('app')) themes.add('Mobile App');
-        if (text.includes('business') || text.includes('company') || text.includes('commerce')) themes.add('Business');
-        if (text.includes('plan') || text.includes('time') || text.includes('schedule')) themes.add('Planning');
-        if (text.includes('team') || text.includes('people') || text.includes('employee')) themes.add('Team Management');
-        if (text.includes('budget') || text.includes('money') || text.includes('cost')) themes.add('Budget');
-        if (text.includes('e-commerce') || text.includes('sales') || text.includes('shop')) themes.add('E-commerce');
-        if (text.includes('design') || text.includes('visual') || text.includes('ui')) themes.add('Design');
-        if (text.includes('software') || text.includes('code') || text.includes('program')) themes.add('Software');
-        if (text.includes('education') || text.includes('learn') || text.includes('course')) themes.add('Education');
+        if (text.includes('web') || text.includes('site') || text.includes('internet')) themes.add('web development');
+        if (text.includes('mobile') || text.includes('phone') || text.includes('app')) themes.add('mobile app');
+        if (text.includes('business') || text.includes('company') || text.includes('commerce')) themes.add('business');
+        if (text.includes('plan') || text.includes('time') || text.includes('schedule')) themes.add('planning');
+        if (text.includes('team') || text.includes('people') || text.includes('employee')) themes.add('team');
+        if (text.includes('budget') || text.includes('money') || text.includes('cost')) themes.add('budget');
+        if (text.includes('e-commerce') || text.includes('sales') || text.includes('shop')) themes.add('e-commerce');
+        if (text.includes('design') || text.includes('visual') || text.includes('ui')) themes.add('design');
     }
     
     if (themes.size === 0) {
-        themes.add(language === 'tr' ? 'Genel Proje' : 'General Project');
+        themes.add(language === 'tr' ? 'genel proje' : 'general project');
     }
     
     return Array.from(themes);
@@ -310,8 +254,7 @@ async function generateAITasks(answers, questions, language, analysis) {
             { role: "user", content: prompt }
         ],
         temperature: 0.7,
-        max_tokens: 2000,
-        stream: false
+        max_tokens: 3000
     }, {
         headers: { 
             'Authorization': `Bearer ${DEEPSEEK_API_KEY}`, 
@@ -329,94 +272,68 @@ async function generateAITasks(answers, questions, language, analysis) {
 
 function getTaskSystemPrompt(language, experienceLevel) {
     if (language === 'tr') {
-        return `Sen deneyimli bir proje koçusun. ${experienceLevel} seviyesindeki kullanıcıya özel, pratik ve uygulanabilir görevler oluştur.
+        return `Sen çok yardımsever bir proje koçusun. ${experienceLevel} seviyesindeki kullanıcıya özel görevler oluştur.
         
 Görev formatı (JSON array):
 [
   {
-    "title": "Kısa ve net Türkçe başlık",
-    "description": "Açıklayıcı ve motive edici açıklama (minimum 2 cümle)",
-    "priority": "high/medium/low",
-    "estimatedTime": "X saat/gün"
+    "title": "Görev başlığı (Türkçe)",
+    "description": "Net ve yardımsever açıklama",
+    "priority": "high/medium/low"
   }
 ]
 
 Kurallar:
-1. SADECE JSON döndür, başka hiçbir şey yazma
+1. SADECE JSON döndür
 2. 8-12 görev oluştur
-3. Tüm içerik Türkçe olsun
-4. ${experienceLevel} seviyesine uygun, pratik görevler yap
-5. Her görev için tahmini süre ekle
-6. Açıklamalar motive edici ve yardımsever olsun`;
+3. Türkçe kullan
+4. ${experienceLevel} seviyesine uygun`;
     }
     
-    return `You are an experienced project coach. Create practical and actionable tasks specifically for ${experienceLevel} level user.
+    return `You are a very helpful project coach. Create tasks specifically for ${experienceLevel} level user.
     
 Task format (JSON array):
 [
   {
-    "title": "Short and clear English title",
-    "description": "Descriptive and motivational description (minimum 2 sentences)",
-    "priority": "high/medium/low",
-    "estimatedTime": "X hours/days"
+    "title": "Task title (English)",
+    "description": "Clear and helpful description",
+    "priority": "high/medium/low"
   }
 ]
 
 Rules:
-1. Return ONLY JSON, nothing else
+1. Return ONLY JSON
 2. Create 8-12 tasks
-3. All content in English
-4. Make tasks suitable for ${experienceLevel} level, practical
-5. Add estimated time for each task
-6. Descriptions should be motivational and helpful`;
+3. Use English
+4. Suitable for ${experienceLevel} level`;
 }
 
 function createTaskPrompt(answers, questions, language, analysis) {
     const isTurkish = language === 'tr';
     
     let prompt = isTurkish ?
-        `${analysis.experienceLevel} seviyesinde bir kullanıcı için proje yönetimi görevleri oluştur.\n\n` :
-        `Create project management tasks for a ${analysis.experienceLevel} level user.\n\n`;
+        `Lütfen ${analysis.experienceLevel} seviyesinde bir kullanıcı için proje yönetimi görevleri oluştur.\n\n` :
+        `Please create project management tasks for a ${analysis.experienceLevel} level user.\n\n`;
     
     if (analysis.qaText && analysis.qaText.length > 50) {
         prompt += isTurkish ? "KULLANICI BİLGİLERİ:\n" : "USER INFORMATION:\n";
-        prompt += analysis.qaText.substring(0, 800) + "\n\n";
+        prompt += analysis.qaText.substring(0, 1000) + "\n\n";
     }
     
     prompt += isTurkish ?
-        `**Kullanıcı Seviyesi:** ${analysis.experienceLevel}\n` +
-        `**Proje Temaları:** ${analysis.themes.join(', ')}\n\n` +
-        "Lütfen 8-12 adet pratik, uygulanabilir ve motive edici görev oluştur. " +
-        "Görevler JSON formatında olsun. Her görev için:\n" +
-        "- Net bir başlık\n" +
-        "- Detaylı açıklama (en az 2 cümle)\n" +
-        "- Öncelik seviyesi (high/medium/low)\n" +
-        "- Tahmini tamamlanma süresi\n\n" +
-        "Örnek format:\n" +
+        `Proje Temaları: ${analysis.themes.join(', ')}\n\n` +
+        "8-12 adet basit, anlaşılır, uygulanabilir görev oluştur. " +
+        "Görevler JSON formatında olsun. Örnek:\n" +
         `[
-  {
-    "title": "Proje vizyonunu tanımla",
-    "description": "Projenin temel amacını ve hedeflerini 2-3 cümlede açıkla. Bu, tüm ekibin aynı hedefe odaklanmasını sağlar.",
-    "priority": "high",
-    "estimatedTime": "2 saat"
-  }
+  {"title": "Proje fikrini yaz", "description": "Projenin amacını 2-3 cümlede açıkla", "priority": "high"},
+  {"title": "İlk adımı planla", "description": "İlk hafta için bir plan yap", "priority": "medium"}
 ]` :
-        `**User Level:** ${analysis.experienceLevel}\n` +
-        `**Project Themes:** ${analysis.themes.join(', ')}\n\n` +
-        "Please create 8-12 practical, actionable and motivational tasks. " +
-        "Tasks should be in JSON format. For each task include:\n" +
-        "- Clear title\n" +
-        "- Detailed description (at least 2 sentences)\n" +
-        "- Priority level (high/medium/low)\n" +
-        "- Estimated completion time\n\n" +
-        "Example format:\n" +
+        `Project Themes: ${analysis.themes.join(', ')}\n\n` +
+        "Create 8-12 simple, understandable, actionable tasks. " +
+        "Tasks should be in JSON format. Example:\n" +
         `[
-  {
-    "title": "Define project vision",
-    "description": "Describe the core purpose and goals of your project in 2-3 sentences. This ensures the entire team focuses on the same goal.",
-    "priority": "high",
-    "estimatedTime": "2 hours"
-  }
+  {"title": "Write project idea", "description": "Describe the project purpose in 2-3 sentences", "priority": "high"},
+  {"title": "Plan first step", "description": "Make a plan for the first week", "priority": "medium"}
 ]`;
     
     return prompt;
@@ -444,7 +361,7 @@ function parseAITasks(aiResponse, language) {
         }
         
         return tasks.map((task, index) => ({
-            id: `task_${Date.now()}_${index}`,
+            id: `ai_${Date.now()}_${index}`,
             title: task.title || (language === 'tr' ? `Görev ${index + 1}` : `Task ${index + 1}`),
             description: task.description || getDefaultTaskDescription(language, index),
             status: 'todo',
@@ -471,27 +388,27 @@ function validatePriority(priority) {
 function getDefaultTaskDescription(language, index) {
     if (language === 'tr') {
         const descriptions = [
-            'Bu görev projenizin başlangıcı için önemli bir adımdır. Küçük başlayın ve adım adım ilerleyin.',
-            'Proje ilerlemeniz için temel bir görev. Her adım sizi hedefinize yaklaştırır.',
-            'Bu görev size yol gösterecek ve projenizi bir sonraki seviyeye taşıyacak.',
-            'Başlamak için mükemmel bir nokta. Bu görevi tamamlayarak momentum kazanın.',
-            'Projenizin gelişimi için kritik bir adım. Dikkatle planlayın ve uygulayın.',
-            'Planlamanızı güçlendirecek önemli bir görev. Detaylara özen gösterin.',
-            'Kaynaklarınızı organize etmenize yardımcı olacak pratik bir görev.',
-            'Zaman yönetimi için önemli bir adım. Gerçekçi hedefler belirleyin.'
+            'Bu görev projenizin başlangıcı için önemlidir.',
+            'Proje ilerlemeniz için temel bir adım.',
+            'Bu görev size yol gösterecek ve ilerlemenizi sağlayacak.',
+            'Başlamak için mükemmel bir nokta.',
+            'Projenizin bir sonraki aşamasına geçiş görevi.',
+            'Planlamanızı güçlendirecek önemli bir görev.',
+            'Kaynaklarınızı organize etmenize yardımcı olacak.',
+            'Zaman yönetimi için kritik bir adım.'
         ];
         return descriptions[index % descriptions.length];
     }
     
     const descriptions = [
-        'This task is an important step for starting your project. Start small and progress step by step.',
-        'A fundamental task for your project progress. Each step brings you closer to your goal.',
-        'This task will guide you and take your project to the next level.',
-        'A perfect starting point. Complete this task to gain momentum.',
-        'A critical step for your project development. Plan carefully and implement.',
-        'An important task that will strengthen your planning. Pay attention to details.',
-        'A practical task that will help you organize your resources.',
-        'An important step for time management. Set realistic goals.'
+        'This task is important for starting your project.',
+        'A fundamental step for your project progress.',
+        'This task will guide you and help you make progress.',
+        'A perfect starting point.',
+        'Task to transition to the next phase of your project.',
+        'An important task that will strengthen your planning.',
+        'Will help you organize your resources.',
+        'A critical step for time management.'
     ];
     return descriptions[index % descriptions.length];
 }
@@ -519,107 +436,27 @@ function createFallbackTask(index, language, analysis) {
     const isTurkish = language === 'tr';
     
     const taskTemplates = isTurkish ? [
-        { 
-            title: 'Proje fikrini yaz', 
-            desc: 'Yapmak istediğin projeyi basit ve net bir şekilde açıkla. Ne yapmak istiyorsun ve neden önemli?',
-            estimatedTime: '30 dakika'
-        },
-        { 
-            title: 'Temel hedefleri belirle', 
-            desc: 'Projenden ne beklediğini 3 ana maddede yaz. Neyi başarmak istiyorsun ve nasıl ölçeceksin?',
-            estimatedTime: '45 dakika'
-        },
-        { 
-            title: 'İlk adımları planla', 
-            desc: 'İlk hafta neler yapabileceğini düşün ve gerçekçi bir plan oluştur. Küçük başla, büyük düşün.',
-            estimatedTime: '1 saat'
-        },
-        { 
-            title: 'İhtiyaçları listele', 
-            desc: 'Projen için gerekli araçları, kaynakları, becerileri ve yardımcıları detaylı şekilde yaz.',
-            estimatedTime: '1 saat'
-        },
-        { 
-            title: 'Zaman çizelgesi oluştur', 
-            desc: 'Projen için gerçekçi bir zaman planı yap. Her şeyi aynı anda yapmaya çalışma, öncelikleri belirle.',
-            estimatedTime: '1.5 saat'
-        },
-        { 
-            title: 'İlerleme takip sistemi kur', 
-            desc: 'Nasıl ilerleyeceğini düşün ve bir takip yöntemi belirle. Haftalık değerlendirmeler yap.',
-            estimatedTime: '45 dakika'
-        },
-        { 
-            title: 'Geri bildirim al', 
-            desc: 'Proje fikrini birkaç kişiyle paylaş ve geri bildirim al. Farklı perspektifler faydalı olacaktır.',
-            estimatedTime: '1 saat'
-        },
-        { 
-            title: 'Küçük bir prototip/test yap', 
-            desc: 'Projenden küçük bir parçayı test etmek için basit bir deneme yap. Öğrenerek ilerle.',
-            estimatedTime: '2 saat'
-        },
-        { 
-            title: 'Öğrenilenleri belgele', 
-            desc: 'Yaptıkların ve öğrendiklerin hakkında notlar tut. Bu notlar gelecekte çok değerli olacak.',
-            estimatedTime: '30 dakika'
-        },
-        { 
-            title: 'Sonraki aşamayı planla', 
-            desc: 'Bir sonraki aşamada ne yapacağını detaylı şekilde planla. Her adımı düşünerek ilerle.',
-            estimatedTime: '1 saat'
-        }
+        { title: 'Proje fikrini yaz', desc: 'Yapmak istediğin projeyi basitçe açıkla. Ne yapmak istiyorsun?' },
+        { title: 'Temel hedefleri belirle', desc: 'Projenden ne beklediğini 2-3 maddede yaz. Neyi başarmak istiyorsun?' },
+        { title: 'İlk adımları planla', desc: 'İlk hafta neler yapabileceğini düşün ve bir plan oluştur.' },
+        { title: 'İhtiyaçları listele', desc: 'Projen için gerekli araçları, kaynakları ve yardımcıları yaz.' },
+        { title: 'Zaman çizelgesi oluştur', desc: 'Projen için basit bir zaman planı yap. Her şeyi aynı anda yapmaya çalışma.' },
+        { title: 'İlerleme takip yöntemi belirle', desc: 'Nasıl ilerleyeceğini düşün. Haftalık notlar alabilirsin.' },
+        { title: 'Geri bildirim al', desc: 'Proje fikrini bir arkadaşına veya aile üyesine anlat ve geri bildirim al.' },
+        { title: 'Küçük bir deneme yap', desc: 'Projenden küçük bir parçayı test etmek için bir şeyler yap.' },
+        { title: 'Öğrenilenleri not al', desc: 'Yaptıkların ve öğrendiklerin hakkında notlar tut.' },
+        { title: 'Sonraki adımı planla', desc: 'Bir sonraki aşamada ne yapacağını planla. Küçük adımlarla ilerle.' }
     ] : [
-        { 
-            title: 'Write project idea', 
-            desc: 'Simply and clearly describe the project you want to do. What do you want to create and why is it important?',
-            estimatedTime: '30 minutes'
-        },
-        { 
-            title: 'Define basic goals', 
-            desc: 'Write 3 main things you expect from your project. What do you want to achieve and how will you measure it?',
-            estimatedTime: '45 minutes'
-        },
-        { 
-            title: 'Plan first steps', 
-            desc: 'Think about what you can do in the first week and create a realistic plan. Start small, think big.',
-            estimatedTime: '1 hour'
-        },
-        { 
-            title: 'List requirements', 
-            desc: 'Write down in detail the tools, resources, skills, and help you will need for your project.',
-            estimatedTime: '1 hour'
-        },
-        { 
-            title: 'Create timeline', 
-            desc: 'Make a realistic time plan for your project. Don\'t try to do everything at once, set priorities.',
-            estimatedTime: '1.5 hours'
-        },
-        { 
-            title: 'Set up progress tracking system', 
-            desc: 'Think about how you will track progress and choose a tracking method. Do weekly evaluations.',
-            estimatedTime: '45 minutes'
-        },
-        { 
-            title: 'Get feedback', 
-            desc: 'Share your project idea with a few people and get feedback. Different perspectives will be helpful.',
-            estimatedTime: '1 hour'
-        },
-        { 
-            title: 'Do a small prototype/test', 
-            desc: 'Do a simple trial to test a small part of your project. Progress by learning.',
-            estimatedTime: '2 hours'
-        },
-        { 
-            title: 'Document learnings', 
-            desc: 'Take notes about what you do and learn. These notes will be very valuable in the future.',
-            estimatedTime: '30 minutes'
-        },
-        { 
-            title: 'Plan next phase', 
-            desc: 'Plan in detail what you will do in the next phase. Think through each step as you progress.',
-            estimatedTime: '1 hour'
-        }
+        { title: 'Write project idea', desc: 'Simply describe the project you want to do. What do you want to create?' },
+        { title: 'Define basic goals', desc: 'Write 2-3 things you expect from your project. What do you want to achieve?' },
+        { title: 'Plan first steps', desc: 'Think about what you can do in the first week and create a plan.' },
+        { title: 'List requirements', desc: 'Write down the tools, resources, and help you will need for your project.' },
+        { title: 'Create timeline', desc: 'Make a simple time plan for your project. Don\'t try to do everything at once.' },
+        { title: 'Set progress tracking method', desc: 'Think about how you will track progress. You can take weekly notes.' },
+        { title: 'Get feedback', desc: 'Explain your project idea to a friend or family member and get feedback.' },
+        { title: 'Do a small test', desc: 'Do something to test a small part of your project.' },
+        { title: 'Note learnings', desc: 'Take notes about what you do and learn.' },
+        { title: 'Plan next step', desc: 'Plan what you will do in the next phase. Take small steps forward.' }
     ];
     
     const template = taskTemplates[index % taskTemplates.length];
@@ -630,8 +467,8 @@ function createFallbackTask(index, language, analysis) {
         description: template.desc,
         status: 'todo',
         priority: index < 3 ? 'high' : index < 7 ? 'medium' : 'low',
-        tags: isTurkish ? ['akıllı', 'temel', 'proje'] : ['smart', 'basic', 'project'],
-        estimatedTime: template.estimatedTime,
+        tags: isTurkish ? ['akıllı', 'temel'] : ['smart', 'basic'],
+        estimatedTime: '1-2 hours',
         createdAt: new Date().toISOString(),
         isFallback: true
     };
@@ -646,11 +483,11 @@ function generateExtraTasks(count, language, analysis) {
             id: `extra_${Date.now()}_${i}`,
             title: isTurkish ? `Ek Görev ${i + 1}` : `Extra Task ${i + 1}`,
             description: isTurkish ? 
-                'Projenizi daha da geliştirmek için bu ek görevi tamamlayın. Bu görev, projenizin kapsamını genişletmenize yardımcı olacaktır.' :
-                'Complete this extra task to further develop your project. This task will help you expand the scope of your project.',
+                'Projenizi daha da geliştirmek için bu ek görevi tamamlayın.' :
+                'Complete this extra task to further develop your project.',
             status: 'todo',
             priority: 'low',
-            tags: isTurkish ? ['ek', 'geliştirme', 'ilerleme'] : ['extra', 'development', 'progress'],
+            tags: isTurkish ? ['ek', 'geliştirme'] : ['extra', 'development'],
             estimatedTime: '1-2 hours',
             createdAt: new Date().toISOString()
         });
@@ -677,8 +514,8 @@ function personalizeTasks(tasks, answers, questions, language) {
     }
     
     return tasks.map((task, taskIndex) => {
-        // Only personalize some tasks (every 2nd or 3rd task)
-        if (taskIndex < 3 || taskIndex % 3 === 0) {
+        // Only personalize some tasks
+        if (taskIndex < 3 || taskIndex % 4 === 0) {
             const answerIndex = taskIndex % validAnswers.length;
             const [qIndex, answer] = validAnswers[answerIndex];
             const qNumber = parseInt(qIndex);
@@ -687,8 +524,8 @@ function personalizeTasks(tasks, answers, questions, language) {
             
             if (answer.length > 20) {
                 const note = isTurkish ?
-                    `\n\n💡 **Kişiselleştirilmiş Not:** Bu görev "${questionText}" hakkındaki cevabınızdan esinlenmiştir.` :
-                    `\n\n💡 **Personalized Note:** This task is inspired by your answer about "${questionText}".`;
+                    `\n\n💡 *Not: Bu görev "${questionText}" hakkındaki düşüncelerinizden esinlenmiştir.*` :
+                    `\n\n💡 *Note: This task is inspired by your thoughts about "${questionText}".*`;
                 
                 return {
                     ...task,
@@ -702,26 +539,15 @@ function personalizeTasks(tasks, answers, questions, language) {
     });
 }
 
-async function generateAIReportWithShortTimeout(tasks, answers, questions, language, analysis) {
-    // First try with shorter timeout
-    try {
-        return await generateAIReport(tasks, answers, questions, language, analysis, 25000); // 25 seconds
-    } catch (error) {
-        console.log('First AI report attempt failed, trying with even shorter prompt');
-        // Try with simpler prompt
-        return await generateSimpleAIReport(tasks, answers, questions, language, analysis);
-    }
-}
-
-async function generateAIReport(tasks, answers, questions, language, analysis, timeout = 25000) {
+async function generateAIReport(tasks, answers, questions, language, analysis) {
     const isTurkish = language === 'tr';
     
     const completedTasks = tasks.filter(t => t.status === 'done').length;
     const totalTasks = tasks.length;
     const completionRate = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
     
-    const highPriorityTasks = tasks.filter(t => t.priority === 'high');
-    const mediumPriorityTasks = tasks.filter(t => t.priority === 'medium');
+    const highPriorityTasks = tasks.filter(t => t.priority === 'high').length;
+    const mediumPriorityTasks = tasks.filter(t => t.priority === 'medium').length;
     
     // Prepare user answers for the report
     let userAnswersText = '';
@@ -729,71 +555,74 @@ async function generateAIReport(tasks, answers, questions, language, analysis, t
         .filter(([_, answer]) => answer && answer !== '[Skipped]' && answer !== '[Not Applicable]');
     
     if (validAnswers.length > 0) {
-        userAnswersText = isTurkish ? '**KULLANICI GİRDİLERİ:**\n\n' : '**USER INPUTS:**\n\n';
+        userAnswersText = isTurkish ? '**KULLANICI CEVAPLARI:**\n\n' : '**USER ANSWERS:**\n\n';
         validAnswers.slice(0, 3).forEach(([index, answer]) => {
             const qNumber = parseInt(index);
             const question = questions[qNumber]?.text || (isTurkish ? `Soru ${qNumber + 1}` : `Question ${qNumber + 1}`);
-            const shortAnswer = answer.length > 100 ? answer.substring(0, 100) + '...' : answer;
-            userAnswersText += `**${question}**\n${shortAnswer}\n\n`;
+            userAnswersText += `**${question}**\n${answer.substring(0, 150)}${answer.length > 150 ? '...' : ''}\n\n`;
         });
     }
     
     const reportPrompt = isTurkish ? `
-BANA PROFESYONEL BİR PROJE RAPORU OLUŞTUR:
+BANA PROFESYONEL VE DETAYLI BİR PROJE RAPORU OLUŞTUR:
 
-**PROJE ÖZETİ:**
+**PROJE BİLGİLERİ:**
 - Toplam Görev: ${totalTasks} (${completedTasks} tamamlanmış, %${completionRate} tamamlanma)
-- Yüksek Öncelikli Görevler: ${highPriorityTasks.length}
-- Orta Öncelikli Görevler: ${mediumPriorityTasks.length}
-- Kullanıcı Seviyesi: ${analysis.experienceLevel}
+- Yüksek Öncelikli Görevler: ${highPriorityTasks}
+- Orta Öncelikli Görevler: ${mediumPriorityTasks}
+- Kullanıcı Deneyim Seviyesi: ${analysis.experienceLevel}
 - Proje Temaları: ${analysis.themes.join(', ')}
 
 **ÖNEMLİ GÖREVLER:**
-${tasks.slice(0, 5).map((t, i) => `${i+1}. ${t.title} (${t.priority} öncelik)`).join('\n')}
+${tasks.slice(0, 5).map((t, i) => `${i+1}. **${t.title}** (${t.priority} öncelik)`).join('\n')}
 
 ${userAnswersText}
 
 **RAFOR İÇERİĞİ İÇİN TALİMATLAR:**
-1. **Proje Özeti** - Genel durum ve temel metrikler
-2. **Görev Analizi** - Öncelik dağılımı ve tamamlanma durumu
-3. **İlerleme Planı** - Önerilen zaman çizelgesi
-4. **Risk Değerlendirmesi** - Olası zorluklar ve çözümler
-5. **Tavsiyeler** - ${analysis.experienceLevel} seviyesi için öneriler
-6. **Sonraki Adımlar** - Eylem planı
 
-**FORMAT:** Markdown formatında, profesyonel Türkçe.
-**UZUNLUK:** Yaklaşık 800-1000 kelime.
-**YAPISI:** Başlıklar, madde işaretleri ve net açıklamalar.
+1. **PROJE ÖZETİ** - Genel durum, temel bulgular ve metrikler
+2. **GÖREV ANALİZİ** - Görev durumları, öncelik dağılımı ve tamamlanma oranları
+3. **PROJE YOL HARİTASI** - 6 haftalık detaylı ilerleme planı ve zaman çizelgesi
+4. **RİSK ANALİZİ** - Potansiyel riskler, zorluklar ve çözüm önerileri (tablo formatında)
+5. **${analysis.experienceLevel.toUpperCase()} SEVİYESİ İÇİN TAVSİYELER** - Seviyeye özel pratik öneriler
+6. **EYLEM PLANI** - Hemen, kısa vadeli ve orta vadeli eylem adımları
+7. **BAŞARI İPUÇLARI** - Motivasyon ve verimlilik için öneriler
 
-SADECE RAPOR İÇERİĞİNİ DÖNDÜR.
+**FORMAT:** Markdown formatında, profesyonel ama anlaşılır Türkçe ile yaz.
+**UZUNLUK:** En az 1200 kelime (kapsamlı ve detaylı olsun)
+**YAPISI:** Başlıklar, alt başlıklar, tablolar ve listeler kullan.
+
+SADECE RAPOR İÇERİĞİNİ DÖNDÜR, BAŞKA AÇIKLAMA YAPMA.
 ` : `
-CREATE A PROFESSIONAL PROJECT REPORT FOR ME:
+CREATE A PROFESSIONAL AND DETAILED PROJECT REPORT FOR ME:
 
-**PROJECT SUMMARY:**
+**PROJECT INFORMATION:**
 - Total Tasks: ${totalTasks} (${completedTasks} completed, ${completionRate}% completion)
-- High Priority Tasks: ${highPriorityTasks.length}
-- Medium Priority Tasks: ${mediumPriorityTasks.length}
-- User Level: ${analysis.experienceLevel}
+- High Priority Tasks: ${highPriorityTasks}
+- Medium Priority Tasks: ${mediumPriorityTasks}
+- User Experience Level: ${analysis.experienceLevel}
 - Project Themes: ${analysis.themes.join(', ')}
 
 **KEY TASKS:**
-${tasks.slice(0, 5).map((t, i) => `${i+1}. ${t.title} (${t.priority} priority)`).join('\n')}
+${tasks.slice(0, 5).map((t, i) => `${i+1}. **${t.title}** (${t.priority} priority)`).join('\n')}
 
 ${userAnswersText}
 
 **REPORT CONTENT INSTRUCTIONS:**
-1. **Project Summary** - Overall status and key metrics
-2. **Task Analysis** - Priority distribution and completion status
-3. **Progress Plan** - Recommended timeline
-4. **Risk Assessment** - Potential challenges and solutions
-5. **Recommendations** - Advice for ${analysis.experienceLevel} level
-6. **Next Steps** - Action plan
 
-**FORMAT:** In markdown format, professional English.
-**LENGTH:** Approximately 800-1000 words.
-**STRUCTURE:** Headings, bullet points, clear explanations.
+1. **PROJECT SUMMARY** - Overall status, key findings and metrics
+2. **TASK ANALYSIS** - Task statuses, priority distribution and completion rates
+3. **PROJECT ROADMAP** - Detailed 6-week progress plan and timeline
+4. **RISK ANALYSIS** - Potential risks, challenges and solution suggestions (in table format)
+5. **RECOMMENDATIONS FOR ${analysis.experienceLevel.toUpperCase()} LEVEL** - Level-specific practical advice
+6. **ACTION PLAN** - Immediate, short-term and medium-term action steps
+7. **SUCCESS TIPS** - Suggestions for motivation and productivity
 
-RETURN ONLY THE REPORT CONTENT.
+**FORMAT:** Write in markdown format, using professional but understandable English.
+**LENGTH:** At least 1200 words (comprehensive and detailed)
+**STRUCTURE:** Use headings, subheadings, tables and lists.
+
+RETURN ONLY THE REPORT CONTENT, NO ADDITIONAL EXPLANATIONS.
 `;
     
     const response = await axios.post(DEEPSEEK_API_URL, {
@@ -802,19 +631,19 @@ RETURN ONLY THE REPORT CONTENT.
             { 
                 role: "system", 
                 content: isTurkish ?
-                    "Sen profesyonel bir proje yönetimi danışmanısın. Net, anlaşılır ve profesyonel proje raporları oluştur. Markdown formatında yaz. Sadece rapor içeriğini döndür." :
-                    "You are a professional project management consultant. Create clear, understandable, and professional project reports. Write in markdown format. Return only the report content."
+                    "Sen üst düzey bir proje yönetimi danışmanısın. Kapsamlı, profesyonel, anlaşılır ve detaylı proje raporları oluştur. Raporları markdown formatında hazırla. Başlıklar, tablolar ve listeler kullan. Sadece rapor içeriğini döndür, başka hiçbir şey yazma." :
+                    "You are a senior project management consultant. Create comprehensive, professional, understandable and detailed project reports. Prepare reports in markdown format. Use headings, tables and lists. Return only the report content, nothing else."
             },
             { role: "user", content: reportPrompt }
         ],
         temperature: 0.6,
-        max_tokens: 2000
+        max_tokens: 4000
     }, {
         headers: { 
             'Authorization': `Bearer ${DEEPSEEK_API_KEY}`, 
             'Content-Type': 'application/json'
         },
-        timeout: timeout
+        timeout: 45000
     });
     
     if (response.status !== 200 || !response.data.choices?.[0]?.message?.content) {
@@ -824,46 +653,7 @@ RETURN ONLY THE REPORT CONTENT.
     return response.data.choices[0].message.content;
 }
 
-async function generateSimpleAIReport(tasks, answers, questions, language, analysis) {
-    const isTurkish = language === 'tr';
-    
-    const completedTasks = tasks.filter(t => t.status === 'done').length;
-    const totalTasks = tasks.length;
-    const completionRate = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
-    
-    const reportPrompt = isTurkish ? 
-        `${analysis.experienceLevel} seviyesi proje raporu oluştur. ${totalTasks} görev, ${completionRate}% tamamlanma. Markdown formatında, sadece rapor içeriği.` :
-        `Create ${analysis.experienceLevel} level project report. ${totalTasks} tasks, ${completionRate}% completion. In markdown format, only report content.`;
-    
-    const response = await axios.post(DEEPSEEK_API_URL, {
-        model: "deepseek-chat",
-        messages: [
-            { 
-                role: "system", 
-                content: isTurkish ?
-                    "Kısa ve öz proje raporları oluştur. Markdown formatında yaz. Sadece rapor içeriği." :
-                    "Create short and concise project reports. Write in markdown format. Only report content."
-                },
-            { role: "user", content: reportPrompt }
-        ],
-        temperature: 0.6,
-        max_tokens: 1500
-    }, {
-        headers: { 
-            'Authorization': `Bearer ${DEEPSEEK_API_KEY}`, 
-            'Content-Type': 'application/json'
-        },
-        timeout: 15000
-    });
-    
-    if (response.status !== 200 || !response.data.choices?.[0]?.message?.content) {
-        throw new Error('Simple AI report generation failed');
-    }
-    
-    return response.data.choices[0].message.content;
-}
-
-function generateProfessionalLocalReport(tasks, answers, questions, language, analysis) {
+function generateLocalReport(tasks, answers, questions, language, analysis) {
     const isTurkish = language === 'tr';
     
     const completedTasks = tasks.filter(t => t.status === 'done').length;
@@ -874,112 +664,129 @@ function generateProfessionalLocalReport(tasks, answers, questions, language, an
     const mediumPriorityTasks = tasks.filter(t => t.priority === 'medium');
     const lowPriorityTasks = tasks.filter(t => t.priority === 'low');
     
-    const now = new Date();
-    const formattedDate = now.toLocaleDateString(isTurkish ? 'tr-TR' : 'en-US', {
+    const currentDate = new Date();
+    const formattedDate = currentDate.toLocaleDateString(isTurkish ? 'tr-TR' : 'en-US', {
         year: 'numeric',
         month: 'long',
-        day: 'numeric'
-    });
-    const formattedTime = now.toLocaleTimeString(isTurkish ? 'tr-TR' : 'en-US', {
-        hour: '2-digit',
-        minute: '2-digit'
+        day: 'numeric',
+        weekday: 'long'
     });
     
     let report = isTurkish ? 
-        `# 📋 PROJE DURUM RAPORU\n\n` :
-        `# 📋 PROJECT STATUS REPORT\n\n`;
+        `# 📊 PROJE ANALİZ RAPORU\n\n` :
+        `# 📊 PROJECT ANALYSIS REPORT\n\n`;
     
-    // Header Section
-    report += `## 📊 ${isTurkish ? 'PROJE ÖZETİ' : 'PROJECT SUMMARY'}\n\n`;
+    report += `**${isTurkish ? 'Rapor Tarihi' : 'Report Date'}:** ${formattedDate}\n`;
+    report += `**${isTurkish ? 'Proje Kimliği' : 'Project ID'}:** PRJ-${Date.now().toString().slice(-8)}\n`;
+    report += `**${isTurkish ? 'Kullanıcı Seviyesi' : 'User Level'}:** ${analysis.experienceLevel}\n\n`;
     
-    report += `**${isTurkish ? 'Rapor Tarihi' : 'Report Date'}:** ${formattedDate} | ${formattedTime}\n`;
-    report += `**${isTurkish ? 'Proje Kimliği' : 'Project ID'}:** PRJ-${now.getTime().toString().slice(-6)}\n`;
-    report += `**${isTurkish ? 'Kullanıcı Seviyesi' : 'User Level'}:** ${analysis.experienceLevel}\n`;
-    report += `**${isTurkish ? 'Proje Temaları' : 'Project Themes'}:** ${analysis.themes.join(', ')}\n\n`;
+    report += `---\n\n`;
     
-    // Key Metrics
-    report += `### ${isTurkish ? 'Ana Metrikler' : 'Key Metrics'}\n\n`;
+    // 1. PROJECT SUMMARY
+    report += isTurkish ? 
+        `## 1. 📈 PROJE ÖZETİ\n\n` :
+        `## 1. 📈 PROJECT SUMMARY\n\n`;
     
-    const metrics = [
-        { label: isTurkish ? 'Toplam Görev' : 'Total Tasks', value: totalTasks, icon: '📋' },
-        { label: isTurkish ? 'Tamamlanan' : 'Completed', value: `${completedTasks} (${completionRate}%)`, icon: '✅' },
-        { label: isTurkish ? 'Yüksek Öncelikli' : 'High Priority', value: highPriorityTasks.length, icon: '🔴' },
-        { label: isTurkish ? 'Orta Öncelikli' : 'Medium Priority', value: mediumPriorityTasks.length, icon: '🟡' },
-        { label: isTurkish ? 'Düşük Öncelikli' : 'Low Priority', value: lowPriorityTasks.length, icon: '🟢' },
-        { label: isTurkish ? 'Cevaplanan Sorular' : 'Questions Answered', value: analysis.answerCount, icon: '💬' }
-    ];
+    report += isTurkish ?
+        `Bu rapor, **${totalTasks} görev** ve kullanıcı girdileri üzerine hazırlanmış kapsamlı bir analizdir. Proje **${analysis.experienceLevel}** seviyesinde bir kullanıcı tarafından yönetiliyor.\n\n` :
+        `This report is a comprehensive analysis based on **${totalTasks} tasks** and user inputs. The project is managed by a **${analysis.experienceLevel}** level user.\n\n`;
     
-    metrics.forEach(metric => {
-        report += `${metric.icon} **${metric.label}:** ${metric.value}\n`;
-    });
+    report += `### ${isTurkish ? 'Temel Metrikler' : 'Key Metrics'}\n\n`;
+    report += `| ${isTurkish ? 'Metrik' : 'Metric'} | ${isTurkish ? 'Değer' : 'Value'} |\n`;
+    report += `|-------|--------|\n`;
+    report += `| ${isTurkish ? 'Toplam Görev' : 'Total Tasks'} | ${totalTasks} |\n`;
+    report += `| ${isTurkish ? 'Tamamlanan' : 'Completed'} | ${completedTasks} (${completionRate}%) |\n`;
+    report += `| ${isTurkish ? 'Yüksek Öncelikli' : 'High Priority'} | ${highPriorityTasks.length} |\n`;
+    report += `| ${isTurkish ? 'Orta Öncelikli' : 'Medium Priority'} | ${mediumPriorityTasks.length} |\n`;
+    report += `| ${isTurkish ? 'Düşük Öncelikli' : 'Low Priority'} | ${lowPriorityTasks.length} |\n`;
+    report += `| ${isTurkish ? 'Kullanıcı Katılımı' : 'User Engagement'} | ${analysis.answerCount} ${isTurkish ? 'cevap' : 'answers'} |\n\n`;
     
-    report += `\n`;
-    
-    // Task Analysis
-    report += `## 📈 ${isTurkish ? 'GÖREV ANALİZİ' : 'TASK ANALYSIS'}\n\n`;
+    // 2. TASK ANALYSIS
+    report += isTurkish ? 
+        `## 2. 📋 GÖREV ANALİZİ\n\n` :
+        `## 2. 📋 TASK ANALYSIS\n\n`;
     
     if (highPriorityTasks.length > 0) {
-        report += `### ${isTurkish ? '🎯 ÖNCELİKLİ GÖREVLER' : '🎯 PRIORITY TASKS'}\n\n`;
+        report += isTurkish ?
+            `### 🎯 Yüksek Öncelikli Görevler (Öncelikle Bunları Tamamlayın)\n\n` :
+            `### 🎯 High Priority Tasks (Complete These First)\n\n`;
         
-        highPriorityTasks.slice(0, 3).forEach((task, index) => {
-            const shortDesc = task.description.length > 80 ? 
-                task.description.substring(0, 80) + '...' : 
-                task.description;
-            report += `${index + 1}. **${task.title}**\n`;
-            report += `   📝 ${shortDesc}\n`;
-            report += `   ⏱️ ${task.estimatedTime || '1-2 saat'}\n\n`;
+        highPriorityTasks.slice(0, 4).forEach((task, index) => {
+            report += `**${index + 1}. ${task.title}**\n`;
+            report += `> ${task.description.substring(0, 120)}${task.description.length > 120 ? '...' : ''}\n\n`;
         });
     }
     
-    // Progress Status
-    report += `### ${isTurkish ? '📊 İLERLEME DURUMU' : '📊 PROGRESS STATUS'}\n\n`;
+    // Priority Distribution Chart
+    report += isTurkish ?
+        `### 📊 Öncelik Dağılımı\n\n` :
+        `### 📊 Priority Distribution\n\n`;
     
-    const progressBarLength = 20;
-    const completedBars = Math.round((completedTasks / totalTasks) * progressBarLength);
-    const progressBar = '█'.repeat(completedBars) + '░'.repeat(progressBarLength - completedBars);
-    
-    report += `${progressBar} ${completionRate}%\n\n`;
-    report += `**${isTurkish ? 'Tamamlanma Oranı:' : 'Completion Rate:'}** ${completionRate}%\n`;
-    report += `**${isTurkish ? 'Kalan Görevler:' : 'Remaining Tasks:'}** ${totalTasks - completedTasks}\n\n`;
-    
-    // Priority Distribution
-    report += `### ${isTurkish ? '🎯 ÖNCELİK DAĞILIMI' : '🎯 PRIORITY DISTRIBUTION'}\n\n`;
-    
-    const priorities = [
-        { level: isTurkish ? 'Yüksek' : 'High', count: highPriorityTasks.length, color: '🔴' },
-        { level: isTurkish ? 'Orta' : 'Medium', count: mediumPriorityTasks.length, color: '🟡' },
-        { level: isTurkish ? 'Düşük' : 'Low', count: lowPriorityTasks.length, color: '🟢' }
+    const priorityData = [
+        { priority: isTurkish ? 'Yüksek' : 'High', count: highPriorityTasks.length, color: '🔴' },
+        { priority: isTurkish ? 'Orta' : 'Medium', count: mediumPriorityTasks.length, color: '🟡' },
+        { priority: isTurkish ? 'Düşük' : 'Low', count: lowPriorityTasks.length, color: '🟢' }
     ];
     
-    priorities.forEach(p => {
-        const percentage = totalTasks > 0 ? Math.round((p.count / totalTasks) * 100) : 0;
-        report += `${p.color} **${p.level} ${isTurkish ? 'Öncelik' : 'Priority'}:** ${p.count} ${isTurkish ? 'görev' : 'tasks'} (${percentage}%)\n`;
+    priorityData.forEach(item => {
+        const percentage = totalTasks > 0 ? Math.round((item.count / totalTasks) * 100) : 0;
+        report += `${item.color} **${item.priority}:** ${item.count} görev (${percentage}%)\n`;
     });
     
     report += `\n`;
     
-    // Project Roadmap
-    report += `## 🗺️ ${isTurkish ? 'PROJE YOL HARİTASI' : 'PROJECT ROADMAP'}\n\n`;
+    // 3. PROJECT ROADMAP
+    report += isTurkish ? 
+        `## 3. 🗺️ PROJE YOL HARİTASI\n\n` :
+        `## 3. 🗺️ PROJECT ROADMAP\n\n`;
     
     const roadmap = isTurkish ? [
-        { phase: 'Hafta 1', focus: 'Planlama ve Başlangıç', tasks: 'Yüksek öncelikli görevler' },
-        { phase: 'Hafta 2-3', focus: 'Uygulama', tasks: 'Orta öncelikli görevler' },
-        { phase: 'Hafta 4-6', focus: 'Geliştirme ve Test', tasks: 'Düşük öncelikli görevler' },
-        { phase: 'Hafta 7+', focus: 'Değerlendirme', tasks: 'Geri bildirim ve iyileştirme' }
+        { phase: 'Hafta 1-2', title: 'Planlama ve Başlangıç', focus: 'Yüksek öncelikli görevleri tamamla, temel planı oluştur' },
+        { phase: 'Hafta 3-4', title: 'Uygulama ve Geliştirme', focus: 'Orta öncelikli görevler, ilk prototip/test' },
+        { phase: 'Hafta 5-6', title: 'İyileştirme ve Tamamlama', focus: 'Düşük öncelikli görevler, geri bildirim değerlendirme' },
+        { phase: 'Hafta 7+', title: 'Değerlendirme ve Sonraki Adımlar', focus: 'Proje değerlendirmesi, gelecek planları' }
     ] : [
-        { phase: 'Week 1', focus: 'Planning and Initiation', tasks: 'High priority tasks' },
-        { phase: 'Week 2-3', focus: 'Implementation', tasks: 'Medium priority tasks' },
-        { phase: 'Week 4-6', focus: 'Development and Testing', tasks: 'Low priority tasks' },
-        { phase: 'Week 7+', focus: 'Evaluation', tasks: 'Feedback and improvement' }
+        { phase: 'Week 1-2', title: 'Planning and Initiation', focus: 'Complete high priority tasks, create basic plan' },
+        { phase: 'Week 3-4', title: 'Implementation and Development', focus: 'Medium priority tasks, first prototype/test' },
+        { phase: 'Week 5-6', title: 'Improvement and Completion', focus: 'Low priority tasks, feedback evaluation' },
+        { phase: 'Week 7+', title: 'Evaluation and Next Steps', focus: 'Project evaluation, future plans' }
     ];
     
     roadmap.forEach(item => {
-        report += `### ${item.phase}: ${item.focus}\n`;
-        report += `📌 ${item.tasks}\n\n`;
+        report += `### ${item.phase}: ${item.title}\n`;
+        report += `📌 ${item.focus}\n\n`;
     });
     
-    // Recommendations
-    report += `## 💡 ${isTurkish ? 'TAVSİYELER' : 'RECOMMENDATIONS'}\n\n`;
+    // 4. RISK ASSESSMENT
+    report += isTurkish ? 
+        `## 4. ⚠️ RİSK DEĞERLENDİRMESİ\n\n` :
+        `## 4. ⚠️ RISK ASSESSMENT\n\n`;
+    
+    const risks = isTurkish ? [
+        { risk: 'Kapsam Kayması', level: '🟡 Orta', impact: isTurkish ? 'Proje hedeflerinin değişmesi' : 'Changing project goals', mitigation: isTurkish ? 'Haftalık kapsam gözden geçirmesi yapın' : 'Do weekly scope reviews' },
+        { risk: 'Zaman Sıkışması', level: '🔴 Yüksek', impact: isTurkish ? 'Teslim tarihlerinin kaçırılması' : 'Missing deadlines', mitigation: isTurkish ? 'Gerçekçi zaman çizelgeleri oluşturun' : 'Create realistic timelines' },
+        { risk: 'Motivasyon Kaybı', level: '🟡 Orta', impact: isTurkish ? 'Proje ilerlemesinin yavaşlaması' : 'Slowed project progress', mitigation: isTurkish ? 'Küçük başarıları kutlayın' : 'Celebrate small wins' },
+        { risk: 'Kaynak Yetersizliği', level: '🟢 Düşük', impact: isTurkish ? 'Görevlerin tamamlanamaması' : 'Tasks not completed', mitigation: isTurkish ? 'Ücretsiz araçları keşfedin' : 'Explore free tools' }
+    ] : [
+        { risk: 'Scope Creep', level: '🟡 Medium', impact: 'Changing project goals', mitigation: 'Do weekly scope reviews' },
+        { risk: 'Time Pressure', level: '🔴 High', impact: 'Missing deadlines', mitigation: 'Create realistic timelines' },
+        { risk: 'Loss of Motivation', level: '🟡 Medium', impact: 'Slowed project progress', mitigation: 'Celebrate small wins' },
+        { risk: 'Resource Limitations', level: '🟢 Low', impact: 'Tasks not completed', mitigation: 'Explore free tools' }
+    ];
+    
+    report += `| ${isTurkish ? 'Risk' : 'Risk'} | ${isTurkish ? 'Seviye' : 'Level'} | ${isTurkish ? 'Etki' : 'Impact'} | ${isTurkish ? 'Azaltma Stratejisi' : 'Mitigation Strategy'} |\n`;
+    report += `|------|--------|--------|------------------|\n`;
+    
+    risks.forEach(item => {
+        report += `| ${item.risk} | ${item.level} | ${item.impact} | ${item.mitigation} |\n`;
+    });
+    
+    report += `\n`;
+    
+    // 5. RECOMMENDATIONS
+    report += isTurkish ? 
+        `## 5. 💡 ${analysis.experienceLevel.toUpperCase()} SEVİYESİ İÇİN TAVSİYELER\n\n` :
+        `## 5. 💡 RECOMMENDATIONS FOR ${analysis.experienceLevel.toUpperCase()} LEVEL\n\n`;
     
     const recommendations = getRecommendationsByLevel(analysis.experienceLevel, language);
     recommendations.forEach((rec, index) => {
@@ -988,62 +795,64 @@ function generateProfessionalLocalReport(tasks, answers, questions, language, an
     
     report += `\n`;
     
-    // Action Plan
-    report += `## 🎯 ${isTurkish ? 'EYLEM PLANI' : 'ACTION PLAN'}\n\n`;
+    // 6. ACTION PLAN
+    report += isTurkish ? 
+        `## 6. 🎯 EYLEM PLANI\n\n` :
+        `## 6. 🎯 ACTION PLAN\n\n`;
     
     const actions = isTurkish ? [
-        { icon: '🚀', action: 'İlk yüksek öncelikli görevi bugün başlat' },
-        { icon: '📅', action: 'Haftalık hedefler belirle (3-5 görev)' },
-        { icon: '✅', action: 'Tamamlanan her görevi işaretle' },
-        { icon: '🔄', action: 'Haftalık ilerleme değerlendirmesi yap' },
-        { icon: '📝', action: 'Öğrenilenleri ve notları belgele' }
+        { timeframe: '🚨 Hemen (Bugün)', action: 'İlk yüksek öncelikli görevi başlatın' },
+        { timeframe: '📅 Bu Hafta', action: 'En az 3 görevi tamamlayın' },
+        { timeframe: '📆 Bu Ay', action: 'Yol haritasının ilk iki aşamasını takip edin' },
+        { timeframe: '🔍 İzleme', action: 'Haftalık ilerleme değerlendirmesi yapın' }
     ] : [
-        { icon: '🚀', action: 'Start the first high priority task today' },
-        { icon: '📅', action: 'Set weekly goals (3-5 tasks)' },
-        { icon: '✅', action: 'Mark every completed task' },
-        { icon: '🔄', action: 'Do weekly progress evaluation' },
-        { icon: '📝', action: 'Document learnings and notes' }
+        { timeframe: '🚨 Immediately (Today)', action: 'Start the first high priority task' },
+        { timeframe: '📅 This Week', action: 'Complete at least 3 tasks' },
+        { timeframe: '📆 This Month', action: 'Follow the first two phases of the roadmap' },
+        { timeframe: '🔍 Monitoring', action: 'Do weekly progress evaluation' }
     ];
     
     actions.forEach(item => {
-        report += `${item.icon} ${item.action}\n`;
+        report += `### ${item.timeframe}\n`;
+        report += `${item.action}\n\n`;
     });
     
-    report += `\n`;
-    
-    // Success Tips
-    report += `## 🌟 ${isTurkish ? 'BAŞARI İPUÇLARI' : 'SUCCESS TIPS'}\n\n`;
+    // 7. SUCCESS TIPS
+    report += isTurkish ? 
+        `## 7. 🌟 BAŞARI İPUÇLARI\n\n` :
+        `## 7. 🌟 SUCCESS TIPS\n\n`;
     
     const tips = isTurkish ? [
-        '**Küçük başlayın:** Her gün küçük bir adım atın',
-        '**Tutarlı olun:** Düzenli çalışma alışkanlığı edinin',
-        '**Esnek kalın:** Planlar değişebilir, uyum sağlayın',
-        '**Kutlayın:** Her başarıyı, ne kadar küçük olursa olsun kutlayın',
-        '**Öğrenin:** Her deneyimden bir şeyler öğrenin',
-        '**Paylaşın:** İlerlemenizi başkalarıyla paylaşın'
+        '**Mükemmeliyetçi olmayın:** İlerleme mükemmellikten daha önemlidir.',
+        '**Küçük başlayın:** Büyük hedefler küçük adımlarla ulaşılır.',
+        '**Tutarlı olun:** Günde 15 dakika bile büyük fark yaratır.',
+        '**Esnek kalın:** Planlar değişebilir, uyum sağlamayı öğrenin.',
+        '**Kutlayın:** Her başarıyı, ne kadar küçük olursa olsun kutlayın.',
+        '**Öğrenin:** Her hata bir öğrenme fırsatıdır.',
+        '**Paylaşın:** İlerlemenizi başkalarıyla paylaşın, motive olun.'
     ] : [
-        '**Start small:** Take one small step every day',
-        '**Be consistent:** Develop regular work habits',
-        '**Stay flexible:** Plans can change, adapt',
-        '**Celebrate:** Celebrate every success, no matter how small',
-        '**Learn:** Learn something from every experience',
-        '**Share:** Share your progress with others'
+        '**Don\'t be perfect:** Progress is more important than perfection.',
+        '**Start small:** Big goals are achieved with small steps.',
+        '**Be consistent:** Even 15 minutes a day makes a big difference.',
+        '**Stay flexible:** Plans can change, learn to adapt.',
+        '**Celebrate:** Celebrate every success, no matter how small.',
+        '**Learn:** Every mistake is a learning opportunity.',
+        '**Share:** Share your progress with others, stay motivated.'
     ];
     
     tips.forEach(tip => {
-        report += `✨ ${tip}\n`;
+        report += `✅ ${tip}\n`;
     });
     
     report += `\n---\n\n`;
     
-    // Footer
     report += isTurkish ?
-        `*Bu rapor Intuiva Proje Yöneticisi tarafından otomatik oluşturulmuştur.*\n` +
-        `*Rapor Kimliği: RP-${now.getTime().toString().slice(-8)}*\n` +
-        `*Oluşturulma: ${now.toISOString()}*` :
+        `*Bu rapor Intuiva Proje Yöneticisi tarafından otomatik olarak oluşturulmuştur.*\n` +
+        `*Rapor Kodu: RP-${Date.now().toString().slice(-6)}*\n` +
+        `*Son güncelleme: ${new Date().toISOString()}*` :
         `*This report was automatically generated by Intuiva Project Manager.*\n` +
-        `*Report ID: RP-${now.getTime().toString().slice(-8)}*\n` +
-        `*Generated: ${now.toISOString()}*`;
+        `*Report Code: RP-${Date.now().toString().slice(-6)}*\n` +
+        `*Last updated: ${new Date().toISOString()}*`;
     
     return report;
 }
@@ -1053,57 +862,57 @@ function getRecommendationsByLevel(level, language) {
     
     if (level === 'beginner') {
         return isTurkish ? [
-            'Günde sadece 15-20 dakika ayırarak başlayın',
+            'Çok hızlı ilerlemeye çalışmayın - küçük adımlarla başlayın',
+            'Her gün projenize sadece 15-20 dakika ayırın',
+            'Anlamadığınız konularda internetten basit açıklamalar arayın',
             'İlk görevinizi bugün mutlaka tamamlayın',
-            'Anlamadığınızda basit kaynaklardan yardım alın',
-            'Kendinize karşı sabırlı ve anlayışlı olun',
-            'Her tamamladığınız görev için kendinizi tebrik edin',
-            'Küçük hedefler belirleyin ve bunlara odaklanın',
-            'Progresinizi görsel olarak takip edin (liste yapın)'
+            'Kendinize karşı sabırlı olun - herkes başlangıçta öğrenir',
+            'Basit araçlar kullanın - karmaşık yazılımlarla başlamayın',
+            'Her tamamladığınız görevi kutlayın'
         ] : [
-            'Start by dedicating only 15-20 minutes daily',
+            'Don\'t try to go too fast - start with small steps',
+            'Dedicate only 15-20 minutes daily to your project',
+            'Search for simple explanations online for things you don\'t understand',
             'Definitely complete your first task today',
-            'Get help from simple resources when you don\'t understand',
-            'Be patient and understanding with yourself',
-            'Congratulate yourself for every completed task',
-            'Set small goals and focus on them',
-            'Track your progress visually (make a list)'
+            'Be patient with yourself - everyone learns at the beginning',
+            'Use simple tools - don\'t start with complex software',
+            'Celebrate every completed task'
         ];
     } else if (level === 'intermediate') {
         return isTurkish ? [
-            'Haftalık hedef listeleri oluşturun',
-            'Zaman blokları kullanarak çalışın',
-            'Daha gelişmiş araçları öğrenmeye başlayın',
-            'Geri bildirim almak için projenizi paylaşın',
-            'Dokümantasyon oluşturma alışkanlığı edinin',
+            'Haftalık hedefler belirleyin ve takip edin',
+            'Zaman yönetimi tekniklerini uygulayın (Pomodoro gibi)',
+            'Daha ileri araçları kullanmayı öğrenin',
+            'Geri bildirim almaya açık olun',
+            'Proje dokümantasyonu oluşturun',
             'Risk yönetimi planı yapın',
-            'Ölçülebilir hedefler belirleyin'
+            'Net ölçülebilir hedefler belirleyin'
         ] : [
-            'Create weekly goal lists',
-            'Work using time blocks',
-            'Start learning more advanced tools',
-            'Share your project to get feedback',
-            'Develop documentation habits',
+            'Set and track weekly goals',
+            'Apply time management techniques (like Pomodoro)',
+            'Learn to use more advanced tools',
+            'Be open to receiving feedback',
+            'Create project documentation',
             'Make a risk management plan',
-            'Set measurable goals'
+            'Set clear measurable goals'
         ];
     } else {
         return isTurkish ? [
-            'Stratejik planlama yapın (3-6 ay)',
-            'Kaynak optimizasyonu üzerine odaklanın',
-            'Profesyonel metodolojiler uygulayın',
+            'Stratejik planlama yapın - uzun vadeli hedefler belirleyin',
+            'Kaynak optimizasyonu yapın',
+            'Profesyonel proje yönetimi metodolojilerini uygulayın',
             'KPI\'lar ve performans metrikleri belirleyin',
-            'Ekip yönetimi becerilerinizi geliştirin',
+            'Ekip yönetimi ve delegasyon becerilerinizi geliştirin',
             'Sürekli iyileştirme kültürü oluşturun',
-            'Mentorluk yaparak deneyimlerinizi paylaşın'
+            'Mentorluk yaparak bilginizi paylaşın'
         ] : [
-            'Do strategic planning (3-6 months)',
-            'Focus on resource optimization',
-            'Apply professional methodologies',
+            'Do strategic planning - set long-term goals',
+            'Optimize resources',
+            'Apply professional project management methodologies',
             'Set KPIs and performance metrics',
-            'Develop your team management skills',
+            'Develop team management and delegation skills',
             'Create a continuous improvement culture',
-            'Share your experiences through mentoring'
+            'Share your knowledge through mentoring'
         ];
     }
 }
@@ -1112,40 +921,30 @@ function generateEmptyReport(language) {
     const isTurkish = language === 'tr';
     
     return isTurkish ?
-        `# 📋 PROJE RAPORU\n\n` +
-        `## Merhaba! 👋\n\n` +
-        `Henüz görev oluşturulmadığı için detaylı bir rapor hazırlanamıyor.\n\n` +
-        `### 🚀 Başlamak İçin:\n\n` +
-        `1. Soruları cevaplayarak projenizi tanımlayın\n` +
-        `2. "Görev Oluştur" butonuna tıklayın\n` +
-        `3. Oluşturulan görevlerle çalışmaya başlayın\n` +
-        `4. İlerledikçe detaylı raporlar alın\n\n` +
-        `### 💡 İpucu:\n` +
-        `Ne kadar çok soruyu detaylı cevaplarsanız, o kadar kişiselleştirilmiş ve faydalı görevler alırsınız!\n\n` +
-        `---\n` +
-        `*Intuiva Proje Yöneticisi - Her seviyede proje desteği*` :
-        `# 📋 PROJECT REPORT\n\n` +
-        `## Hello! 👋\n\n` +
-        `A detailed report cannot be prepared yet as no tasks have been created.\n\n` +
-        `### 🚀 To Get Started:\n\n` +
-        `1. Define your project by answering the questions\n` +
-        `2. Click the "Generate Tasks" button\n` +
-        `3. Start working with the created tasks\n` +
-        `4. Get detailed reports as you progress\n\n` +
-        `### 💡 Tip:\n` +
-        `The more questions you answer in detail, the more personalized and useful tasks you'll receive!\n\n` +
-        `---\n` +
-        `*Intuiva Project Manager - Project support at every level*`;
+        `# 📊 PROJE RAPORU\n\n` +
+        `**Henüz görev oluşturulmadı.**\n\n` +
+        `Başlamak için:\n` +
+        `1. Soruları cevaplayın\n` +
+        `2. Görevler oluşturun\n` +
+        `3. İlk göreve başlayın\n\n` +
+        `*Küçük başla, büyük düşün!* 🚀` :
+        `# 📊 PROJECT REPORT\n\n` +
+        `**No tasks created yet.**\n\n` +
+        `To get started:\n` +
+        `1. Answer the questions\n` +
+        `2. Generate tasks\n` +
+        `3. Start the first task\n\n` +
+        `*Start small, think big!* 🚀`;
 }
 
 function getSuccessNote(language, taskCount, experienceLevel) {
     if (language === 'tr') {
-        return `✨ ${taskCount} görev başarıyla oluşturuldu! (${experienceLevel} seviyesi)\n` +
-               `İlk görevle başlayın ve her adımda ilerleyin. Başarınızı kutlamayı unutmayın! 🎉`;
+        return `✅ ${taskCount} görev başarıyla oluşturuldu! (${experienceLevel} seviyesi) 🎯\n` +
+               `İlk görevle başlayın ve adım adım ilerleyin. Her adım sizi başarıya yaklaştırır! 🚀`;
     }
     
-    return `✨ ${taskCount} tasks successfully created! (${experienceLevel} level)\n` +
-           `Start with the first task and progress with each step. Don't forget to celebrate your success! 🎉`;
+    return `✅ ${taskCount} tasks successfully created! (${experienceLevel} level) 🎯\n` +
+           `Start with the first task and progress step by step. Each step brings you closer to success! 🚀`;
 }
 
 // ==================== SERVER SETUP ====================
@@ -1155,22 +954,21 @@ app.get('/health', (req, res) => {
     res.json({
         status: 'healthy',
         service: 'Intuiva Project Manager API',
-        version: '4.0.0',
+        version: '3.0.0',
         timestamp: new Date().toISOString(),
         endpoints: {
             generateTasks: 'POST /api/generate-tasks',
             generateReport: 'POST /api/generate-report'
         },
         features: [
-            'auto-language-detection',
             'intelligent-task-generation',
-            'professional-report-generation',
+            'comprehensive-report-generation',
             'bilingual-support',
-            'smart-timeout-handling'
+            'smart-fallbacks',
+            'experience-level-adaptation'
         ],
-        languageSupport: ['Auto-detect', 'English', 'Turkish'],
-        apiKeyConfigured: !!DEEPSEEK_API_KEY,
-        note: 'AI report timeout set to 25s with fallback to local professional reports'
+        languageSupport: ['English', 'Turkish'],
+        apiKeyConfigured: !!DEEPSEEK_API_KEY
     });
 });
 
@@ -1179,14 +977,11 @@ app.get('/', (req, res) => {
     res.json({
         message: 'Intuiva Project Manager API',
         status: 'running',
-        version: '4.0.0',
-        features: [
-            'Auto language detection from user answers',
-            'Professional task generation',
-            'Comprehensive report generation (AI + Local)',
-            'Smart timeout handling',
-            'Beginner to expert support'
-        ]
+        version: '3.0.0',
+        documentation: {
+            generateTasks: 'POST /api/generate-tasks with {answers, questions, language, generateReport}',
+            generateReport: 'POST /api/generate-report with {tasks, answers, questions, language}'
+        }
     });
 });
 
@@ -1195,8 +990,8 @@ app.listen(PORT, () => {
     console.log('🚀 Intuiva Backend Server Running!');
     console.log(`📍 Port: ${PORT}`);
     console.log('✅ Task Generation: Active');
-    console.log('📊 Report Generation: Active (with smart timeouts)');
-    console.log('🌍 Languages: Auto-detect, English & Turkish');
-    console.log('⏱️ AI Timeout: 25s with fallback to local reports');
+    console.log('📊 Report Generation: Active (AI + Local)');
+    console.log('🌍 Languages: English & Turkish');
+    console.log('🎯 Always works with smart fallbacks');
     console.log(`🔑 API Key: ${DEEPSEEK_API_KEY ? 'Configured ✅' : 'Missing ⚠️'}`);
 });
