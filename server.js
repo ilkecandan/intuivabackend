@@ -5,69 +5,111 @@ require('dotenv').config();
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
 
 const DEEPSEEK_API_URL = 'https://api.deepseek.com/v1/chat/completions';
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
 
-// The key endpoint for generating tasks
+// Enhanced task generation endpoint
 app.post('/api/generate-tasks', async (req, res) => {
     try {
         const userAnswers = req.body.answers || {};
         const questions = req.body.questions || [];
+        const language = req.body.language || 'en';
+        const generateReport = req.body.generateReport || false;
 
-        // 1. Construct the AI Prompt
-        const prompt = constructProjectManagerPrompt(userAnswers, questions);
-
-        // 2. Call DeepSeek API
-        const aiResponse = await axios.post(DEEPSEEK_API_URL, {
+        // 1. Construct the AI Prompt for tasks using the enhanced system
+        const taskPrompt = constructEnhancedProjectManagerPrompt(userAnswers, questions, language);
+        
+        // 2. Call DeepSeek API for tasks
+        const taskResponse = await axios.post(DEEPSEEK_API_URL, {
             model: "deepseek-chat",
             messages: [
                 { 
                     role: "system", 
-                    content: `You are a practical, hands-on project manager who creates actionable Kanban tasks.
-                    Your personality: Enthusiastic, supportive, and focused on execution.
-                    Your goal: Turn ANY user input (even minimal, silly, or vague) into practical project tasks.
-                    Philosophy: "Every project starts somewhere - let's build momentum!"` 
+                    content: `You are a senior project manager with 15+ years of experience across industries.
+                    Your expertise: Turning vague ideas into actionable plans, identifying risks early, and creating structured workflows.
+                    Your style: Professional yet approachable, data-driven but pragmatic.
+                    Your goal: Create immediately usable Kanban tasks that reflect real-world project management best practices.
+                    
+                    CRITICAL: Return ONLY a valid JSON array of tasks. No explanations, no additional text.
+                    Each task MUST have: id, title, description, status ("todo"), priority ("high"/"medium"/"low"), tags array.` 
                 },
-                { role: "user", content: prompt }
+                { role: "user", content: taskPrompt }
             ],
-            temperature: 0.8, // Slightly higher for creative interpretation
-            max_tokens: 2500
+            temperature: 0.7,
+            max_tokens: 3000
         }, {
             headers: { 
                 'Authorization': `Bearer ${DEEPSEEK_API_KEY}`, 
                 'Content-Type': 'application/json' 
             },
-            timeout: 40000 // 30 second timeout
+            timeout: 40000
         });
 
-        // 3. Parse the AI's response
-        const generatedTasksText = aiResponse.data.choices[0].message.content;
+        // 3. Parse tasks
+        const generatedTasksText = taskResponse.data.choices[0].message.content;
         const tasks = parseAITasks(generatedTasksText);
+        const validatedTasks = validateAndCompleteTasks(tasks, userAnswers, language);
 
-        // 4. Ensure tasks have proper structure
-        const validatedTasks = validateAndCompleteTasks(tasks, userAnswers);
+        // 4. Generate report if requested
+        let report = null;
+        if (generateReport) {
+            try {
+                report = await generateAIReport(userAnswers, questions, validatedTasks, language);
+            } catch (reportError) {
+                console.error('Report generation failed:', reportError.message);
+                report = generateDefaultReport(validatedTasks, userAnswers, language);
+            }
+        }
 
-        // 5. Send tasks back to frontend
+        // 5. Send response
         res.json({ 
             success: true, 
             tasks: validatedTasks,
-            note: validatedTasks.length > 0 ? "AI generated tasks based on your input" : "Using default tasks"
+            report: report,
+            note: validatedTasks.length > 0 ? "AI generated tasks based on your input" : "Using recommended tasks"
         });
 
     } catch (error) {
         console.error('DeepSeek API Error:', error.response?.data || error.message);
         // Return default tasks as fallback
+        const language = req.body.language || 'en';
         res.json({ 
             success: true, 
-            tasks: generateDefaultTasks(),
+            tasks: generateDefaultTasks(language),
+            report: generateDefaultReport([], {}, language),
             note: "AI service temporarily unavailable - using recommended starter tasks"
         });
     }
 });
-// Enhanced prompt construction with multilingual, industry-aware experience assessment
-function constructProjectManagerPrompt(answers, questions) {
+
+// Separate endpoint for generating reports only
+app.post('/api/generate-report', async (req, res) => {
+    try {
+        const { answers, questions, tasks, language } = req.body;
+        
+        const report = await generateAIReport(answers || {}, questions || [], tasks || [], language || 'en');
+        
+        res.json({ 
+            success: true, 
+            report: report,
+            note: "AI generated project report"
+        });
+
+    } catch (error) {
+        console.error('Report generation failed:', error.message);
+        const language = req.body.language || 'en';
+        res.json({ 
+            success: true, 
+            report: generateDefaultReport(req.body.tasks || [], req.body.answers || {}, language),
+            note: "Using locally generated report"
+        });
+    }
+});
+
+// Enhanced prompt construction with the sophisticated analysis from your original
+function constructEnhancedProjectManagerPrompt(answers, questions, language) {
     let qaText = "";
     let hasSubstantialAnswers = false;
     
@@ -225,7 +267,8 @@ function constructProjectManagerPrompt(answers, questions) {
         languageGuidance,
         industryAdjustments,
         qaText,
-        answerAnalysis
+        answerAnalysis,
+        language
     );
     
     // Log detailed analysis
@@ -239,7 +282,7 @@ function constructProjectManagerPrompt(answers, questions) {
     return prompt;
 }
 
-// Helper Functions
+// Helper Functions (all the original helper functions)
 function detectLanguageProfile(text, analysis) {
     const englishPattern = /\b(the|and|for|with|this|that|project|manage|plan)\b/i;
     const turkishPattern = /\b(ve|ile|bu|şu|proje|yönet|plan)\b/i;
@@ -479,7 +522,7 @@ function getIndustryAdjustments(industry, experienceLevel) {
     return adjustments[industry]?.[experienceLevel.split('_')[0]] || adjustments.general.beginner;
 }
 
-function buildEnhancedPrompt(experienceLevel, experienceReasoning, primaryLanguage, primaryIndustry, languageGuidance, industryAdjustments, qaText, analysis) {
+function buildEnhancedPrompt(experienceLevel, experienceReasoning, primaryLanguage, primaryIndustry, languageGuidance, industryAdjustments, qaText, analysis, targetLanguage) {
     // Task count based on experience
     const taskCount = experienceLevel.includes('beginner') ? 6 : 
                      experienceLevel === 'intermediate' ? 8 :
@@ -490,11 +533,57 @@ function buildEnhancedPrompt(experienceLevel, experienceReasoning, primaryLangua
                 "warm, encouraging, and patient" : 
                 "professional, respectful, and collaborative";
     
-    return `ROLE: You are an adaptive, multilingual project management consultant with global experience.
+    const isTurkish = targetLanguage === 'tr';
+    
+    if (isTurkish) {
+        return `ROLE: Küresel deneyime sahip, çok dilli bir proje yönetimi danışmanısınız.
+CONTEXT: Gelişmiş analize göre, kullanıcı "${experienceLevel}" seviyesinde.
+REASONING: ${experienceReasoning}
+INDUSTRY CONTEXT: ${primaryIndustry}
+LANGUAGE: TÜRKÇE
+
+${languageGuidance}
+
+ENDÜSTRİYE ÖZEL YÖNLENDİRME:
+• ${industryAdjustments}
+• ${primaryIndustry}-özgü zorlukları ve fırsatları düşünün
+• Endüstriye uygun araç ve metodolojiler önerin
+
+DENEYİME GÖRE AYARLANMIŞ TALİMATLAR:
+1. Tam olarak ${taskCount} uygulanabilir Kanban görevi oluşturun
+2. Görev karmaşıklığını şuna uydurun: ${experienceLevel.replace('_', ' ')}
+3. Görev açıklamalarında ${tone} ton kullanın
+4. Yeni başlayanlar için: Güven oluşturmak için "hızlı kazanç" görevleri ekleyin
+5. Uzmanlar için: Stratejik ve optimizasyon görevleri ekleyin
+6. Anlamlı olduğunda özgün cevaplarına atıfta bulunun
+
+GÖREV YAPISI GEREKSİNİMLERİ:
+• Durum: Her zaman 'todo' (henüz başlamadılar)
+• Öncelik: Yüksek (1-2), orta (3-4), düşük (geri kalan) karışımı
+• Etiketler: Deneyim seviyesine uygun etiketler ekleyin
+• Açıklamalar: ${experienceLevel.includes('beginner') ? 'Kısa "bu neden önemli" açıklamaları ekleyin' : 'Profesyonel bağlamı varsayın'}
+
+ÖZEL DÜŞÜNCELER:
+${analysis.answerPatterns.includes('seeking_guidance') ? '• Kullanıcı sorular sordu - bunları ilgili görevlerde doğrudan ele alın' : ''}
+${analysis.answerPatterns.includes('requesting_examples') ? '• Kullanıcı örnekler istiyor - görev açıklamalarında somut senaryolar sağlayın' : ''}
+${primaryLanguage === 'mixed' ? '• Kullanıcı dilleri karıştırıyor - faydalı olduğunda Türkçe terimlerle net, basit İngilizce ile yanıt verin' : ''}
+
+KRİTİK FORMAT GEREKSİNİMLERİ:
+• SADECE geçerli bir JSON dizisi döndürün
+• Ek metin, açıklama veya markdown yok
+• Her görev: {"id": "tanımlayıcı_id", "title": "Görev", "description": "...", "status": "todo", "priority": "high/medium/low", "tags": ["etiket1", "etiket2"]}
+• ID'ler küçük harfli_alt_çizgili olmalı
+
+KULLANICININ S&C (orijinal dili koruyun):
+${qaText}
+
+CEVABINIZ (SADECE JSON dizisi):`;
+    } else {
+        return `ROLE: You are an adaptive, multilingual project management consultant with global experience.
 CONTEXT: Based on sophisticated analysis, user is at "${experienceLevel}" level.
 REASONING: ${experienceReasoning}
 INDUSTRY CONTEXT: ${primaryIndustry}
-LANGUAGE: ${primaryLanguage.toUpperCase()}
+LANGUAGE: ENGLISH
 
 ${languageGuidance}
 
@@ -532,31 +621,124 @@ USER'S Q&A (preserve original language):
 ${qaText}
 
 YOUR RESPONSE (JSON array only):`;
+    }
 }
 
+// Generate AI report
+async function generateAIReport(answers, questions, tasks, language) {
+    const isTurkish = language === 'tr';
+    
+    const completedTasks = tasks.filter(t => t.status === 'done').length;
+    const totalTasks = tasks.length;
+    const highPriorityTasks = tasks.filter(t => t.priority === 'high' || t.priority === 'critical').length;
+    
+    const answeredQuestions = Object.values(answers).filter(a => 
+        a && a !== '[Skipped]' && a !== '[Not Applicable]'
+    ).length;
+    
+    const reportPrompt = isTurkish ? `
+BİR PROJE RAPORU OLUŞTUR:
+
+PROJE VERİLERİ:
+• ${totalTasks} toplam görev (${completedTasks} tamamlandı)
+• ${highPriorityTasks} yüksek öncelikli görev
+• ${answeredQuestions} detaylı yanıtlanmış soru
+
+RAPOR YAPISI:
+1. **Proje Özeti** - Genel bakış ve temel bulgular
+2. **Analiz ve Değerlendirme** - Güçlü yönler ve gelişim alanları
+3. **Risk Değerlendirmesi** - Potansiyel riskler ve azaltma stratejileri
+4. **Öneriler** - Eylem odaklı tavsiyeler
+5. **Sonraki Adımlar** - Acil ve orta vadeli eylemler
+
+GÖREVLER:
+${tasks.map((t, i) => `${i+1}. ${t.title} (${t.priority} öncelik)`).join('\n')}
+
+DETAYLI YANITLARDAN ÖRNEKLER:
+${Object.entries(answers)
+    .filter(([_, a]) => a && a !== '[Skipped]' && a !== '[Not Applicable]')
+    .slice(0, 3)
+    .map(([i, a]) => `• Soru ${parseInt(i)+1}: ${a.substring(0, 100)}...`)
+    .join('\n')}
+
+RAPORU OLUŞTUR (Markdown formatında, Türkçe):
+` : `
+CREATE A PROJECT REPORT:
+
+PROJECT DATA:
+• ${totalTasks} total tasks (${completedTasks} completed)
+• ${highPriorityTasks} high-priority tasks
+• ${answeredQuestions} detailed answers
+
+REPORT STRUCTURE:
+1. **Executive Summary** - Overview and key findings
+2. **Analysis & Assessment** - Strengths and areas for improvement
+3. **Risk Assessment** - Potential risks and mitigation strategies
+4. **Recommendations** - Actionable advice
+5. **Next Steps** - Immediate and mid-term actions
+
+TASKS:
+${tasks.map((t, i) => `${i+1}. ${t.title} (${t.priority} priority)`).join('\n')}
+
+SAMPLE ANSWERS:
+${Object.entries(answers)
+    .filter(([_, a]) => a && a !== '[Skipped]' && a !== '[Not Applicable]')
+    .slice(0, 3)
+    .map(([i, a]) => `• Question ${parseInt(i)+1}: ${a.substring(0, 100)}...`)
+    .join('\n')}
+
+CREATE THE REPORT (In markdown format, English):
+`;
+    
+    const reportResponse = await axios.post(DEEPSEEK_API_URL, {
+        model: "deepseek-chat",
+        messages: [
+            { 
+                role: "system", 
+                content: `You are a senior management consultant creating executive project reports.
+                Create a comprehensive one-page project report with these sections:
+                1. Executive Summary
+                2. Project Analysis
+                3. Risk Assessment
+                4. Recommendations
+                5. Next Steps
+                
+                Be specific, data-driven, and actionable. Use markdown formatting with **bold** for section headers.
+                Return only the report content, no additional text.` 
+            },
+            { role: "user", content: reportPrompt }
+        ],
+        temperature: 0.6,
+        max_tokens: 2500
+    }, {
+        headers: { 
+            'Authorization': `Bearer ${DEEPSEEK_API_KEY}`, 
+            'Content-Type': 'application/json' 
+        },
+        timeout: 30000
+    });
+
+    return reportResponse.data.choices[0].message.content;
+}
 
 // Parse AI tasks with better error handling
 function parseAITasks(text) {
     try {
-        // Clean the text
         const cleanText = text.trim();
-        
-        // Look for JSON array
         const jsonStart = cleanText.indexOf('[');
         const jsonEnd = cleanText.lastIndexOf(']') + 1;
         
         if (jsonStart === -1 || jsonEnd === 0) {
-            console.log("No JSON array found in response:", cleanText.substring(0, 200));
-            return generateDefaultTasks();
+            console.log("No JSON array found");
+            return [];
         }
         
         const jsonString = cleanText.substring(jsonStart, jsonEnd);
         const tasks = JSON.parse(jsonString);
         
-        // Validate it's an array
         if (!Array.isArray(tasks)) {
-            console.log("Response is not an array:", typeof tasks);
-            return generateDefaultTasks();
+            console.log("Response is not an array");
+            return [];
         }
         
         return tasks;
@@ -564,25 +746,26 @@ function parseAITasks(text) {
     } catch (e) {
         console.error("Parsing AI tasks failed:", e.message);
         console.log("Response snippet:", text.substring(0, 300));
-        return generateDefaultTasks();
+        return [];
     }
 }
 
 // Validate and complete task structure
-function validateAndCompleteTasks(tasks, userAnswers) {
+function validateAndCompleteTasks(tasks, userAnswers, language) {
+    const isTurkish = language === 'tr';
+    
     if (!Array.isArray(tasks) || tasks.length === 0) {
-        return generateDefaultTasks();
+        return generateDefaultTasks(language);
     }
     
     return tasks.map((task, index) => {
-        // Ensure required fields
         const validatedTask = {
             id: task.id || `task_${Date.now()}_${index}`,
-            title: task.title || `Task ${index + 1}`,
-            description: task.description || "Action item for your project",
+            title: task.title || (isTurkish ? `Görev ${index + 1}` : `Task ${index + 1}`),
+            description: task.description || (isTurkish ? 'Açıklama eklenecek' : 'Description to be added'),
             status: ['todo', 'inprogress', 'done'].includes(task.status) ? task.status : 'todo',
-            priority: ['high', 'medium', 'low'].includes(task.priority) ? task.priority : 'medium',
-            tags: Array.isArray(task.tags) ? task.tags : ['project']
+            priority: ['critical', 'high', 'medium', 'low'].includes(task.priority) ? task.priority : 'medium',
+            tags: Array.isArray(task.tags) ? task.tags : [isTurkish ? 'proje' : 'project']
         };
         
         // Personalize based on answers if possible
@@ -593,59 +776,123 @@ function validateAndCompleteTasks(tasks, userAnswers) {
             if (firstAnswer && firstAnswer.length > 10) {
                 // Add personal touch to first task
                 if (index === 0) {
-                    validatedTask.description += ` Based on what you shared about "${firstAnswer.substring(0, 50)}...", this is your first step.`;
+                    validatedTask.description += ` ${isTurkish ? 
+                        `"${firstAnswer.substring(0, 50)}..." yanıtınıza dayanarak` : 
+                        `Based on your answer about "${firstAnswer.substring(0, 50)}..."`}`;
                 }
             }
         }
         
         return validatedTask;
-    }).slice(0, 8); // Limit to 8 tasks max
+    }).slice(0, 15); // Limit to 15 tasks max
 }
 
 // Generate sensible default tasks
-function generateDefaultTasks() {
+function generateDefaultTasks(language = 'en') {
+    const isTurkish = language === 'tr';
+    
     return [
         {
             id: `default_${Date.now()}_1`,
-            title: "Clarify your project vision",
-            description: "Write 2-3 sentences about what you want to achieve. Don't worry about perfection - just get ideas down!",
+            title: isTurkish ? 'Proje vizyonunu netleştir' : 'Clarify project vision',
+            description: isTurkish ? 
+                'Projenin temel amacını ve hedeflerini 2-3 cümlede açıkla' :
+                'Define the core purpose and objectives in 2-3 sentences',
             status: "todo",
             priority: "high",
-            tags: ["vision", "planning", "brainstorming"]
+            tags: isTurkish ? ['vizyon', 'planlama'] : ['vision', 'planning']
         },
         {
             id: `default_${Date.now()}_2`,
-            title: "List 3 potential first steps",
-            description: "What are the smallest, easiest things you could do to start? Example: 'Research similar projects' or 'Sketch ideas'",
+            title: isTurkish ? 'Ana paydaşları belirle' : 'Identify key stakeholders',
+            description: isTurkish ? 
+                'Projeden etkilenecek kişi ve grupları listeleyerek iletişim planı oluştur' :
+                'List people and groups affected by the project and create a communication plan',
             status: "todo",
-            priority: "medium",
-            tags: ["action", "momentum", "planning"]
+            priority: "high",
+            tags: isTurkish ? ['paydaşlar', 'iletişim'] : ['stakeholders', 'communication']
         },
         {
             id: `default_${Date.now()}_3`,
-            title: "Identify one resource you need",
-            description: "What's one thing (tool, person, information) that would help you move forward?",
+            title: isTurkish ? 'Başarı metriklerini tanımla' : 'Define success metrics',
+            description: isTurkish ? 
+                'Projenin başarısını nasıl ölçeceğini belirleyerek somut KPI\'lar oluştur' :
+                'Determine how to measure project success with concrete KPIs',
             status: "todo",
             priority: "medium",
-            tags: ["resources", "planning"]
+            tags: isTurkish ? ['metrikler', 'ölçüm'] : ['metrics', 'measurement']
         },
         {
             id: `default_${Date.now()}_4`,
-            title: "Set up project workspace",
-            description: "Create a folder for your project files or set up a basic document to collect ideas",
+            title: isTurkish ? 'İlk 3 adımı belirle' : 'Identify first 3 steps',
+            description: isTurkish ? 
+                'Hemen başlayabileceğin en küçük, en kolay 3 şey nedir?' :
+                'What are the 3 smallest, easiest things you could do right away?',
             status: "todo",
-            priority: "low",
-            tags: ["setup", "organization"]
-        },
-        {
-            id: `default_${Date.now()}_5`,
-            title: "Schedule 30 minutes for focused work",
-            description: "Block time in your calendar to actually work on this project. Consistency beats intensity!",
-            status: "todo",
-            priority: "high",
-            tags: ["time management", "execution"]
+            priority: "medium",
+            tags: isTurkish ? ['eylem', 'başlangıç'] : ['action', 'start']
         }
     ];
+}
+
+// Generate default report
+function generateDefaultReport(tasks, answers, language) {
+    const isTurkish = language === 'tr';
+    const totalTasks = tasks.length;
+    const completedTasks = tasks.filter(t => t.status === 'done').length;
+    const answeredQuestions = Object.values(answers).filter(a => 
+        a && a !== '[Skipped]' && a !== '[Not Applicable]'
+    ).length;
+    
+    return isTurkish ? `
+**Proje Özeti**
+Bu rapor, ${answeredQuestions} soru yanıtına ve ${totalTasks} göreve dayanarak oluşturulmuştur. Proje yapısı temel düzeyde tanımlanmış olup daha fazla detaylandırılması gerekmektedir.
+
+**Analiz ve Değerlendirme**
+• **Mevcut Durum**: Proje başlangıç aşamasında, temel çerçeve oluşturulmuş
+• **Güçlü Yönler**: Proje kapsamı netleştirilmiş, temel görevler tanımlanmış
+• **Gelişim Alanları**: Risk analizi, zaman çizelgesi ve kaynak planlaması gerekiyor
+
+**Risk Değerlendirmesi**
+• **Orta Risk**: Kapsam belirsizliği ve kaynak tahsisi ihtiyacı
+• **Düşük Risk**: Temel yapı sağlam, görevler net tanımlanmış
+
+**Öneriler**
+1. **Hemen**: Kapsamı netleştir, kaynakları belirle
+2. **Kısa Vadeli**: Detaylı zaman çizelgesi oluştur
+3. **Orta Vadeli**: Risk yönetim planı geliştir
+
+**Sonraki Adımlar**
+1. Proje kapsam belgesini tamamla
+2. Görev zamanlamalarını belirle
+3. Haftalık ilerleme takibi başlat
+
+*Bu otomatik oluşturulmuş bir rapordur. Detaylar proje ilerledikçe güncellenmelidir.*
+` : `
+**Executive Summary**
+This report is based on ${answeredQuestions} answered questions and ${totalTasks} defined tasks. The project structure is defined at a basic level and requires further detailing.
+
+**Analysis & Assessment**
+• **Current Status**: Project in initial phase, basic framework established
+• **Strengths**: Clear project scope, well-defined core tasks
+• **Areas for Improvement**: Need for risk analysis, timeline, and resource planning
+
+**Risk Assessment**
+• **Medium Risk**: Scope uncertainty and resource allocation needs
+• **Low Risk**: Solid foundation, clearly defined tasks
+
+**Recommendations**
+1. **Immediate**: Clarify scope, identify resources
+2. **Short-term**: Create detailed timeline
+3. **Mid-term**: Develop risk management plan
+
+**Next Steps**
+1. Complete project scope document
+2. Define task schedules
+3. Initiate weekly progress tracking
+
+*This is an automatically generated report. Details should be updated as the project progresses.*
+`;
 }
 
 // Health check endpoint
@@ -653,20 +900,23 @@ app.get('/health', (req, res) => {
     res.json({ 
         status: 'healthy', 
         service: 'Intuiva AI Backend',
+        version: '2.0.0',
+        features: ['task-generation', 'project-reports', 'multilingual', 'experience-analysis'],
         timestamp: new Date().toISOString()
     });
 });
 
 // Test endpoint
 app.post('/test-prompt', (req, res) => {
-    const { answers, questions } = req.body;
-    const prompt = constructProjectManagerPrompt(answers || {}, questions || []);
+    const { answers, questions, language } = req.body;
+    const prompt = constructEnhancedProjectManagerPrompt(answers || {}, questions || [], language || 'en');
     res.json({ prompt: prompt });
 });
 
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
-    console.log(`🚀 Backend running on port ${PORT}`);
+    console.log(`🚀 Intuiva Backend v2.0 running on port ${PORT}`);
     console.log(`🔗 Health check: http://localhost:${PORT}/health`);
     console.log(`🤖 DeepSeek API Key: ${DEEPSEEK_API_KEY ? 'Set ✅' : 'Missing ❌'}`);
+    console.log(`🌍 Features: Enhanced task generation + Project reports`);
 });
